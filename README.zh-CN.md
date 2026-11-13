@@ -51,10 +51,10 @@ flowchart LR
         direction LR
         B("agy-lark<br/>桥接器")
         C("Antigravity<br/>服务端")
-        B <-->|"ACP · stdio"| C
+        B <-->|"ACP"| C
     end
 
-    A <-->|"WebSocket · HTTPS"| B
+    A <-->|"WebSocket"| B
 
     classDef side fill:#292D32,stroke:#666C73,stroke-width:1.5px,color:#F1F1F1
     classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:2px,color:#FFFFFF
