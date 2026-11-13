@@ -41,12 +41,31 @@ delivering live streaming cards, mid-turn steering, and timely cancellation via 
 
 `agy-lark` runs as a single Python process sitting cleanly between two protocol boundaries:
 
-```text
-Feishu / Lark Open Platform
-  ▲  ▼  Single in-process WebSocket + HTTPS (official lark-oapi SDK)
-agy-lark Daemon (Python 3.10+)
-  ▲  ▼  Native JSON-RPC over stdio (agy acp --stdio)
-Local Antigravity (`agy`) + Project Workspace
+```mermaid
+flowchart LR
+    subgraph Cloud ["Remote"]
+        direction LR
+        A("Feishu / Lark<br/>Client")
+    end
+
+    subgraph Local ["Local"]
+        direction LR
+        B("agy-lark<br/>Bridge")
+        C("Antigravity<br/>Server")
+        B <-->|"ACP · stdio"| C
+    end
+
+    A <-->|"WebSocket · HTTPS"| B
+
+    classDef side fill:#292D32,stroke:#666C73,stroke-width:1.5px,color:#F1F1F1
+    classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:2px,color:#FFFFFF
+
+    class A,C side
+    class B core
+
+    style Cloud fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
+    style Local fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
+    linkStyle default stroke:#9CA3AA,stroke-width:1.5px
 ```
 
 - **Unified In-Process Feishu Transport (`lark-oapi`)**: Handles both message events (`im.message.receive_v1`) and card button callbacks (`card.action.trigger`) over a single WebSocket connection, while pushing CardKit updates directly over HTTPS.
