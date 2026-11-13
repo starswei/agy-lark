@@ -1,0 +1,48 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode & packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test & linter caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment variables & secrets (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+*.local.*
+*.pem
+*.key
+
+# Runtime state, databases & logs
+logs/
+*.log
+state/
+state.json
+sessions.json
+auth*.json
+tokens.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary & OS/IDE files
+tmp/
+.tmp/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

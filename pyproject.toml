@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agy-lark"
+version = "0.1.0a1"
+description = "A lightweight, native-ACP bridge between Antigravity (agy) and Feishu / Lark via lark-oapi."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+  { name = "starswei" },
+]
+keywords = ["antigravity", "agy", "acp", "feishu", "lark", "bridge", "chatbot"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "lark-oapi>=1.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/starswei/agy-lark"
+Repository = "https://github.com/starswei/agy-lark"
+Issues = "https://github.com/starswei/agy-lark/issues"
+
+# Note: Runtime package `src/agy_lark/` and `[project.scripts]` CLI entrypoint
+# will be added in the upcoming kernel/daemon milestones.
