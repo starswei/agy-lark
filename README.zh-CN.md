@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/Logo-dark.png" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/logo/Logo.png" />
-  <img src="docs/logo/Logo.png" alt="agy-lark Logo" width="180" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/Logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/Logo.svg" />
+  <img src="docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
 </picture>
 
 # agy-lark
@@ -40,33 +40,13 @@
 
 `agy-lark` 作为轻量单进程守护服务，在两端之间只保留两道清晰边界：
 
-```mermaid
-
-flowchart LR
-    subgraph Cloud["远程"]
-        A("飞书 / Lark<br/>客户端")
-    end
-
-    subgraph Local["本地"]
-        B("agy-lark<br/>桥接器")
-        C("Antigravity<br/>服务端")
-        B <-->|ACP| C
-    end
-
-    A <-->|WebSocket| B
-
-    classDef side fill:#292D32,stroke:#666C73,stroke-width:1px,color:#F1F1F1
-    classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:1.5px,color:#FFFFFF
-
-    class A,C side
-    class B core
-
-    style Cloud fill:transparent,stroke:#7D8590,stroke-dasharray:4 3,color:#7D8590
-    style Local fill:transparent,stroke:#7D8590,stroke-dasharray:4 3,color:#7D8590
-
-    linkStyle default stroke:#9CA3AA,stroke-width:1px
-
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.zh-CN.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.zh-CN.svg" />
+    <img src="docs/assets/architecture-light.zh-CN.svg" alt="agy-lark 架构图：飞书 / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
+  </picture>
+</p>
 
 - **单进程飞书接入（`lark-oapi`）** ：通过同一条 WebSocket 长连接统一接收消息事件（`im.message.receive_v1`）与卡片交互回调（`card.action.trigger`），并在进程内直接完成卡片流式更新。
 - **直连原生 ACP（`agy acp --stdio`）** ：通过标准输入输出双向协议流驱动本地会话，天然支持**运行中插话（Steering）**与协议级的**及时取消（`session/cancel`）** 。
@@ -74,12 +54,12 @@ flowchart LR
 <!--
 ## 界面预览
 
-待后续跑通真实飞书卡片链路并补充截图到 `docs/screenshots/` 后取消注释启用：
+待后续跑通真实飞书卡片链路并补充截图到 `docs/assets/` 后取消注释启用：
 
 <table>
 <tr>
-<td><img src="docs/screenshots/01-streaming-card.png" alt="流式卡片预览" width="100%"/><br/><sub>CardKit 2.0 实时流式卡片与停止按钮</sub></td>
-<td><img src="docs/screenshots/02-steering.png" alt="运行中插话效果" width="100%"/><br/><sub>任务进行中随时插话纠偏，不丢失上下文</sub></td>
+<td><img src="docs/assets/01-streaming-card.png" alt="流式卡片预览" width="100%"/><br/><sub>CardKit 2.0 实时流式卡片与停止按钮</sub></td>
+<td><img src="docs/assets/02-steering.png" alt="运行中插话效果" width="100%"/><br/><sub>任务进行中随时插话纠偏，不丢失上下文</sub></td>
 </tr>
 </table>
 -->

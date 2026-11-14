@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" role="img" aria-labelledby="title desc">
+  <title id="title">agy-lark 技术架构</title>
+  <desc id="desc">飞书客户端通过 WebSocket 双向连接本地 agy-lark 桥接器；桥接器通过 ACP 双向连接 Antigravity 服务端。远程和本地环境分别以虚线框标示。</desc>
+  <defs>
+    <marker id="arrow-start" markerWidth="8" markerHeight="8" refX="5.3" refY="3.5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 6 3.5 L 0 7 Z" fill="#ABB6C0"/>
+    </marker>
+    <marker id="arrow-end" markerWidth="8" markerHeight="8" refX="5.3" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 6 3.5 L 0 7 Z" fill="#ABB6C0"/>
+    </marker>
+  </defs>
+
+  <!-- Background and the two deployment boundaries -->
+  <rect width="1280" height="340" fill="#0D1117"/>
+  <rect x="28" y="55" width="306" height="242" rx="14" fill="#141A21" stroke="#67717C" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <rect x="474" y="55" width="778" height="242" rx="14" fill="#141A21" stroke="#67717C" stroke-width="1.5" stroke-dasharray="6 5"/>
+
+  <!-- Zone titles sit cleanly above the dashed border -->
+  <rect x="141" y="42" width="80" height="27" rx="13" fill="#0D1117"/>
+  <text x="181" y="61" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600" fill="#B8C2CC">远程</text>
+  <rect x="827" y="42" width="74" height="27" rx="13" fill="#0D1117"/>
+  <text x="864" y="61" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600" fill="#B8C2CC">本地</text>
+
+  <!-- Nodes -->
+  <rect x="73" y="149" width="216" height="103" rx="12" fill="#2B3038" stroke="#58636E" stroke-width="1.6"/>
+  <rect x="524" y="149" width="244" height="103" rx="12" fill="#2B3038" stroke="#25ADCD" stroke-width="2.4"/>
+  <rect x="973" y="149" width="230" height="103" rx="12" fill="#2B3038" stroke="#58636E" stroke-width="1.6"/>
+
+  <!-- Connection lines are uninterrupted, with arrowheads at both ends -->
+  <path d="M 304 200.5 H 509" fill="none" stroke="#ABB6C0" stroke-width="2" stroke-linecap="round" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)"/>
+  <path d="M 783 200.5 H 958" fill="none" stroke="#ABB6C0" stroke-width="2" stroke-linecap="round" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)"/>
+
+  <!-- Minimal protocol labels sit immediately above the continuous bidirectional arrows -->
+  <rect x="358" y="164" width="100" height="26" rx="7" fill="#1B232C" stroke="#55616C" stroke-width="1"/>
+  <text x="408" y="182" text-anchor="middle" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="14" font-weight="500" fill="#DDE3E7">WebSocket</text>
+  <rect x="843" y="164" width="55" height="26" rx="7" fill="#1B232C" stroke="#55616C" stroke-width="1"/>
+  <text x="870.5" y="182" text-anchor="middle" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="14" font-weight="500" fill="#DDE3E7">ACP</text>
+
+  <!-- Labels: high contrast, deliberately not dependent on embedded web fonts -->
+  <g font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Arial, sans-serif" text-anchor="middle">
+    <text x="181" y="191" font-size="19" font-weight="700" fill="#FFFFFF">飞书 / Lark</text>
+    <text x="181" y="222" font-size="15" font-weight="400" fill="#CDD3D9">客户端</text>
+
+    <text x="646" y="191" font-size="21" font-weight="700" fill="#FFFFFF">agy-lark</text>
+    <text x="646" y="222" font-size="15" font-weight="400" fill="#CDD3D9">桥接器</text>
+
+    <text x="1088" y="191" font-size="19" font-weight="700" fill="#FFFFFF">Antigravity</text>
+    <text x="1088" y="222" font-size="15" font-weight="400" fill="#CDD3D9">服务端</text>
+  </g>
+</svg>

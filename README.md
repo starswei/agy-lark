@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/Logo-dark.png" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/logo/Logo.png" />
-  <img src="docs/logo/Logo.png" alt="agy-lark Logo" width="180" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/Logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/Logo.svg" />
+  <img src="docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
 </picture>
 
 # agy-lark
@@ -41,32 +41,13 @@ delivering live streaming cards, mid-turn steering, and timely cancellation via 
 
 `agy-lark` runs as a single Python process sitting cleanly between two protocol boundaries:
 
-```mermaid
-flowchart LR
-    subgraph Cloud ["Remote"]
-        direction LR
-        A("Feishu / Lark<br/>Client")
-    end
-
-    subgraph Local ["Local"]
-        direction LR
-        B("agy-lark<br/>Bridge")
-        C("Antigravity<br/>Server")
-        B <-->|"ACP"| C
-    end
-
-    A <-->|"WebSocket"| B
-
-    classDef side fill:#292D32,stroke:#666C73,stroke-width:1.5px,color:#F1F1F1
-    classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:2px,color:#FFFFFF
-
-    class A,C side
-    class B core
-
-    style Cloud fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
-    style Local fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
-    linkStyle default stroke:#9CA3AA,stroke-width:1.5px
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg" />
+    <img src="docs/assets/architecture-light.svg" alt="agy-lark architecture: Feishu / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
+  </picture>
+</p>
 
 - **Unified In-Process Feishu Transport (`lark-oapi`)**: Handles both message events (`im.message.receive_v1`) and card button callbacks (`card.action.trigger`) over a single WebSocket connection, while pushing CardKit updates directly over HTTPS.
 - **Direct Native ACP (`agy acp --stdio`)**: Drives local sessions over bidirectional stdio JSON-RPC, enabling **mid-turn steering** and protocol-level **`session/cancel`** cancellation.
@@ -74,12 +55,12 @@ flowchart LR
 <!--
 ## Preview
 
-Uncomment after adding real Feishu / Lark card captures under `docs/screenshots/`:
+Uncomment after adding real Feishu / Lark card captures under `docs/assets/`:
 
 <table>
 <tr>
-<td><img src="docs/screenshots/01-streaming-card.png" alt="Streaming Card" width="100%"/><br/><sub>Live CardKit 2.0 streaming reply with stop control</sub></td>
-<td><img src="docs/screenshots/02-steering.png" alt="Mid-Turn Steering" width="100%"/><br/><sub>Sending follow-up guidance mid-turn without losing context</sub></td>
+<td><img src="docs/assets/01-streaming-card.png" alt="Streaming Card" width="100%"/><br/><sub>Live CardKit 2.0 streaming reply with stop control</sub></td>
+<td><img src="docs/assets/02-steering.png" alt="Mid-Turn Steering" width="100%"/><br/><sub>Sending follow-up guidance mid-turn without losing context</sub></td>
 </tr>
 </table>
 -->
@@ -136,7 +117,7 @@ cp .env.example .env
 ## Roadmap
 
 - [x] **Stage 1**: Repository initialization, isolated Python `3.13.9` `.venv`, and strict `.gitignore` hygiene
-- [x] **Stage 2 (Current)**: MIT license, `.env.example` spec, `pyproject.toml`, bilingual README, and `Logo.png`
+- [x] **Stage 2 (Current)**: MIT license, `.env.example` spec, `pyproject.toml`, bilingual README, and `Logo.svg`
 - [ ] **Stage 3**: Minimal native `agy acp --stdio` kernel validating mid-turn **Steering** and **`session/cancel`**
 - [ ] **Stage 4**: Single-process `lark-oapi` WebSocket daemon + CardKit 2.0 streaming cards & Stop button
 
