@@ -110,7 +110,7 @@ cp .env.example .env
 `agy-lark` strictly separates **public repository assets** from **private local runtime state**:
 
 - **Tracked in Git**: source code, `.env.example`, `pyproject.toml`, `LICENSE`, documentation, and logo assets.
-- **Local-only (`.gitignore`)**: `.env`, `FEISHU_APP_SECRET`, authorized `open_id` lists, `state.json`, `sessions.json`, `logs/`, local databases, and `.venv/`.
+- **Local-only (`.gitignore`)**: `.env`, `FEISHU_APP_SECRET`, authorized `open_id` lists, `.agy-lark/`, `state.json`, `sessions.json`, `logs/`, local databases, and `.venv/`.
 
 **Never commit `.env` or runtime state files to a public repository.**
 

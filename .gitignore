@@ -28,6 +28,7 @@ htmlcov/
 *.key
 
 # Runtime state, databases & logs
+.agy-lark/
 logs/
 *.log
 state/

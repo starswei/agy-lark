@@ -108,7 +108,7 @@ cp .env.example .env
 `agy-lark` 严格隔离**开源仓库资产**与**本地私人运行数据**：
 
 - **提交到 Git 仓库**：源码、`.env.example`、`pyproject.toml`、`LICENSE`、文档与 Logo 资源。
-- **仅保留在本地（已写入 `.gitignore`）** ：`.env`、`FEISHU_APP_SECRET`、授权用户的 `open_id` 列表、`state.json`、`sessions.json`、`logs/`、本地数据库以及 `.venv/`。
+- **仅保留在本地（已写入 `.gitignore`）** ：`.env`、`FEISHU_APP_SECRET`、授权用户的 `open_id` 列表、`.agy-lark/`、`state.json`、`sessions.json`、`logs/`、本地数据库以及 `.venv/`。
 
 **严禁将 `.env` 或运行时状态文件提交到公开仓库**。
 
