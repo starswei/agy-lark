@@ -39,5 +39,9 @@ Homepage = "https://github.com/starswei/agy-lark"
 Repository = "https://github.com/starswei/agy-lark"
 Issues = "https://github.com/starswei/agy-lark/issues"
 
-# Note: Runtime package `src/agy_lark/` and `[project.scripts]` CLI entrypoint
-# will be added in the upcoming kernel/daemon milestones.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
