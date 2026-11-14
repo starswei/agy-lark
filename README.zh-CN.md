@@ -41,30 +41,31 @@
 `agy-lark` 作为轻量单进程守护服务，在两端之间只保留两道清晰边界：
 
 ```mermaid
+
 flowchart LR
-    subgraph Cloud ["远程"]
-        direction LR
+    subgraph Cloud["远程"]
         A("飞书 / Lark<br/>客户端")
     end
 
-    subgraph Local ["本地"]
-        direction LR
+    subgraph Local["本地"]
         B("agy-lark<br/>桥接器")
         C("Antigravity<br/>服务端")
-        B <-->|"ACP"| C
+        B <-->|ACP| C
     end
 
-    A <-->|"WebSocket"| B
+    A <-->|WebSocket| B
 
-    classDef side fill:#292D32,stroke:#666C73,stroke-width:1.5px,color:#F1F1F1
-    classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:2px,color:#FFFFFF
+    classDef side fill:#292D32,stroke:#666C73,stroke-width:1px,color:#F1F1F1
+    classDef core fill:#3B4046,stroke:#25ADCD,stroke-width:1.5px,color:#FFFFFF
 
     class A,C side
     class B core
 
-    style Cloud fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
-    style Local fill:transparent,stroke:#7D8590,stroke-width:1.5px,stroke-dasharray:5 4,color:#7D8590
-    linkStyle default stroke:#9CA3AA,stroke-width:1.5px
+    style Cloud fill:transparent,stroke:#7D8590,stroke-dasharray:4 3,color:#7D8590
+    style Local fill:transparent,stroke:#7D8590,stroke-dasharray:4 3,color:#7D8590
+
+    linkStyle default stroke:#9CA3AA,stroke-width:1px
+
 ```
 
 - **单进程飞书接入（`lark-oapi`）** ：通过同一条 WebSocket 长连接统一接收消息事件（`im.message.receive_v1`）与卡片交互回调（`card.action.trigger`），并在进程内直接完成卡片流式更新。
