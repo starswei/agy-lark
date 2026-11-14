@@ -109,7 +109,8 @@ class TestResolveAgyExecutable(unittest.TestCase):
 
     def test_explicit_agy_exe_miss_raises_file_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            missing = Path(tmp) / "missing_agy.exe"
+            missing_name = "missing_agy.exe" if os.name == "nt" else "missing_agy"
+            missing = Path(tmp) / missing_name
             with self.assertRaises(FileNotFoundError):
                 resolve_agy_executable(str(missing), path_env="")
 
