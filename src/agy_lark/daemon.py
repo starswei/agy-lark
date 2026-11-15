@@ -21,12 +21,25 @@ import warnings
 
 from .acp_client import AcpPromptResult, AcpSessionUpdate, AgyAcpClient
 from .card_streamer import (
+    ACP_EFFORT_CONFIG_ID,
+    ACP_MODEL_CONFIG_ID,
+    AcpEffortOption,
+    AcpModelOption,
     CardTransport,
     StreamingCardUpdater,
     build_create_card_payload,
+    build_effort_selector_card_json,
+    build_model_selector_card_json,
     build_stream_content_payload,
     build_update_card_payload,
     build_update_settings_payload,
+    has_config_option,
+    parse_available_efforts,
+    parse_available_models,
+    parse_current_effort_id,
+    parse_current_model_id,
+    parse_effort_select_callback_value,
+    parse_model_select_callback_value,
     parse_stop_callback_value,
 )
 from .config import AgyLarkConfig, load_config
@@ -118,6 +131,33 @@ class AcpClientProtocol(Protocol):
         message_id: str | None = None,
     ) -> Future[AcpPromptResult]:
         """异步发送 prompt 或运行中插话请求，返回承载回合结果的 Future。"""
+
+    def set_model(
+        self,
+        session_id: str,
+        model_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """为指定 ACP 会话切换当前使用的模型标识。"""
+
+    def set_config_option(
+        self,
+        session_id: str,
+        config_id: str,
+        value: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """更新指定 ACP 会话的配置项（如 `model` 或 `thought_level`）。"""
+
+    def close_session(
+        self,
+        session_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """关闭指定 ACP 会话并释放服务端资源。"""
 
     def cancel(self, session_id: str) -> None:
         """向指定会话下发协议级 session/cancel 中止通知。"""
@@ -725,6 +765,25 @@ class _ConversationEntry:
     dispatch_lock: threading.RLock = field(default_factory=threading.RLock)
     session_id: str | None = None
     active_turn: _ActiveTurn | None = None
+    uses_config_options: bool = False
+    model_id: str | None = None
+    available_models: tuple[AcpModelOption, ...] = ()
+    effort_id: str | None = None
+    available_efforts: tuple[AcpEffortOption, ...] = ()
+
+
+@dataclass
+class _SelectorCardRecord:
+    """记录 `/model` 或 `/effort` 交互卡片对应的 CardKit 实体与递增序号状态。"""
+
+    kind: str
+    card_id: str
+    conv_key: str
+    models: tuple[AcpModelOption, ...] = ()
+    efforts: tuple[AcpEffortOption, ...] = ()
+    current_model_name: str | None = None
+    sequence: int = 0
+    update_lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 class AgyLarkDaemon:
@@ -770,9 +829,11 @@ class AgyLarkDaemon:
         self._seen_messages = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._thread_aliases = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._reply_message_keys = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
+        self._selector_cards = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._conversations: dict[str, _ConversationEntry] = {}
         self._session_entries: dict[str, _ConversationEntry] = {}
         self._active_turns: dict[str, _ActiveTurn] = {}
+        self._default_available_models: tuple[AcpModelOption, ...] = ()
 
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -922,6 +983,22 @@ class AgyLarkDaemon:
         action_value = _read_field(action, "value")
         stop_payload = parse_stop_callback_value(action_value)
         if stop_payload is None:
+            model_payload = parse_model_select_callback_value(action_value)
+            if model_payload is not None:
+                return self._handle_selector_callback(
+                    event=event,
+                    kind="model",
+                    target_value=model_payload.model_id,
+                    conv_key_hint=model_payload.conv_key,
+                )
+            effort_payload = parse_effort_select_callback_value(action_value)
+            if effort_payload is not None:
+                return self._handle_selector_callback(
+                    event=event,
+                    kind="effort",
+                    target_value=effort_payload.effort_id,
+                    conv_key_hint=effort_payload.conv_key,
+                )
             return {}
 
         cancelled = self._cancel_session_turn(
@@ -997,19 +1074,104 @@ class AgyLarkDaemon:
 
     def _process_incoming_message(self, msg: IncomingMessage) -> None:
         conv_key = self.resolve_conversation_key(msg)
-        if msg.text.strip().lower() == "/stop":
+        normalized_cmd = msg.text.strip().lower()
+        if normalized_cmd == "/stop":
             self._handle_stop_command(msg, conv_key)
+            return
+        if normalized_cmd == "/model":
+            self._handle_selector_command(msg, conv_key, kind="model")
+            return
+        if normalized_cmd == "/effort":
+            self._handle_selector_command(msg, conv_key, kind="effort")
             return
 
         self._handle_prompt_or_steer(msg, conv_key)
 
+    def _sync_entry_config_locked(self, entry: _ConversationEntry, payload: Any) -> None:
+        """在持有 `entry.dispatch_lock` 时同步 ACP 返回的可用模型与思考强度元数据。"""
+        has_model_cfg = has_config_option(payload, option_id=ACP_MODEL_CONFIG_ID)
+        has_effort_cfg = has_config_option(payload, option_id=ACP_EFFORT_CONFIG_ID)
+        if has_model_cfg or has_effort_cfg:
+            entry.uses_config_options = True
+
+        models = parse_available_models(payload)
+        if models:
+            entry.available_models = models
+            with self._lock:
+                self._default_available_models = models
+
+        reported_model = parse_current_model_id(payload)
+        if reported_model:
+            entry.model_id = reported_model
+
+        if entry.uses_config_options:
+            entry.available_efforts = parse_available_efforts(payload)
+            entry.effort_id = parse_current_effort_id(payload)
+
+    def _apply_session_config_locked(
+        self,
+        entry: _ConversationEntry,
+        session_id: str,
+        *,
+        kind: str,
+        target_value: str,
+    ) -> None:
+        """在持有 `entry.dispatch_lock` 时对已存在会话调用 ACP 设置模型或思考强度。"""
+        if kind == "model":
+            if entry.uses_config_options:
+                resp = self.acp_client.set_config_option(
+                    session_id,
+                    ACP_MODEL_CONFIG_ID,
+                    target_value,
+                )
+                if has_config_option(resp, option_id=ACP_MODEL_CONFIG_ID) or has_config_option(
+                    resp,
+                    option_id=ACP_EFFORT_CONFIG_ID,
+                ):
+                    self._sync_entry_config_locked(entry, resp)
+                else:
+                    entry.model_id = target_value
+            else:
+                self.acp_client.set_model(session_id, target_value)
+                entry.model_id = target_value
+            return
+
+        resp = self.acp_client.set_config_option(
+            session_id,
+            ACP_EFFORT_CONFIG_ID,
+            target_value,
+        )
+        if has_config_option(resp, option_id=ACP_MODEL_CONFIG_ID) or has_config_option(
+            resp,
+            option_id=ACP_EFFORT_CONFIG_ID,
+        ):
+            self._sync_entry_config_locked(entry, resp)
+        else:
+            entry.effort_id = target_value
+
     def _ensure_entry_session_locked(
         self,
         entry: _ConversationEntry,
+        *,
+        initial_model_id: str | None = None,
+        initial_effort_id: str | None = None,
     ) -> tuple[str | None, str | None]:
-        """在持有 `entry.dispatch_lock` 的前提下确保会话已建立并返回 (session_id, error_text)。"""
+        """在持有 `entry.dispatch_lock` 的前提下确保会话已建立并应用目标模型与思考强度。"""
         if entry.session_id is not None:
             return entry.session_id, None
+
+        desired_model = (
+            (initial_model_id.strip() if isinstance(initial_model_id, str) else "")
+            or entry.model_id
+            or self.config.agy_model
+            or ""
+        ).strip()
+        desired_effort = (
+            (initial_effort_id.strip() if isinstance(initial_effort_id, str) else "")
+            or entry.effort_id
+            or self.config.agy_effort
+            or ""
+        ).strip()
 
         try:
             session_info = self.acp_client.new_session(cwd=self.config.default_workspace)
@@ -1022,10 +1184,340 @@ class AgyLarkDaemon:
             return None, "启动 Antigravity 会话失败：未返回有效 sessionId。"
 
         session_id = raw_sid.strip()
+        self._sync_entry_config_locked(entry, session_info)
+
+        if desired_model and desired_model != entry.model_id:
+            try:
+                self._apply_session_config_locked(
+                    entry,
+                    session_id,
+                    kind="model",
+                    target_value=desired_model,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "为新建 ACP 会话设置模型失败 (conv_key=%s, session_id=%s, model_id=%s)",
+                    entry.conv_key,
+                    session_id,
+                    desired_model,
+                )
+                self._cleanup_failed_session(session_id)
+                return None, f"设置模型 {desired_model} 失败：{exc}"
+
+        if desired_effort:
+            if entry.uses_config_options and not entry.available_efforts:
+                if initial_effort_id:
+                    self._cleanup_failed_session(session_id)
+                    return None, "当前模型不支持调节思考强度。"
+                logger.debug(
+                    "当前模型不支持 thought_level，跳过默认思考强度 (conv_key=%s, effort=%s)",
+                    entry.conv_key,
+                    desired_effort,
+                )
+            elif desired_effort != entry.effort_id:
+                try:
+                    self._apply_session_config_locked(
+                        entry,
+                        session_id,
+                        kind="effort",
+                        target_value=desired_effort,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "为新建 ACP 会话设置思考强度失败 (conv_key=%s, session_id=%s, effort=%s)",
+                        entry.conv_key,
+                        session_id,
+                        desired_effort,
+                    )
+                    self._cleanup_failed_session(session_id)
+                    return None, f"设置思考强度 {desired_effort} 失败：{exc}"
+
         entry.session_id = session_id
         with self._lock:
             self._session_entries[session_id] = entry
         return session_id, None
+
+    def _cleanup_failed_session(self, session_id: str) -> None:
+        try:
+            self.acp_client.close_session(session_id)
+        except Exception:
+            logger.debug("清理失败会话时忽略异常 (session_id=%s)", session_id)
+
+    def _format_current_model_name_locked(self, entry: _ConversationEntry) -> str | None:
+        with self._lock:
+            default_models = self._default_available_models
+        models = entry.available_models or default_models
+        current_model = entry.model_id or (self.config.agy_model or None)
+        if not current_model:
+            return None
+        matched = next((opt for opt in models if opt.model_id == current_model), None)
+        if matched is not None:
+            return f"{matched.name} (`{matched.model_id}`)"
+        return f"`{current_model}`"
+
+    def _build_selector_card_payload(
+        self,
+        *,
+        kind: str,
+        conv_key: str,
+        models: tuple[AcpModelOption, ...],
+        efforts: tuple[AcpEffortOption, ...],
+        current_model_id: str | None,
+        current_effort_id: str | None,
+        current_model_name: str | None,
+    ) -> dict[str, Any]:
+        if kind == "model":
+            return build_model_selector_card_json(
+                models=models,
+                current_model_id=current_model_id,
+                conv_key=conv_key,
+            )
+        return build_effort_selector_card_json(
+            efforts=efforts,
+            current_effort_id=current_effort_id,
+            current_model_name=current_model_name,
+            conv_key=conv_key,
+        )
+
+    def _handle_selector_command(
+        self,
+        msg: IncomingMessage,
+        conv_key: str,
+        *,
+        kind: str,
+    ) -> None:
+        cmd_label = "/model" if kind == "model" else "/effort"
+        card_noun = "模型选择卡片" if kind == "model" else "思考强度选择卡片"
+        try:
+            self._ensure_acp_started()
+        except Exception as exc:
+            logger.exception("处理 %s 时启动 ACP 失败 (conv_key=%s)", cmd_label, conv_key)
+            self._safe_send_text(
+                chat_id=msg.chat_id,
+                text=f"启动 Antigravity 会话失败：{exc}",
+                reply_to_message_id=msg.message_id,
+                reply_in_thread=bool(msg.thread_id),
+                conv_key=conv_key,
+            )
+            return
+
+        entry = self._get_or_create_entry(conv_key)
+        with entry.dispatch_lock:
+            session_id, session_err = self._ensure_entry_session_locked(entry)
+            if session_id is None:
+                self._safe_send_text(
+                    chat_id=msg.chat_id,
+                    text=session_err or "启动 Antigravity 会话失败。",
+                    reply_to_message_id=msg.message_id,
+                    reply_in_thread=bool(msg.thread_id),
+                    conv_key=conv_key,
+                )
+                return
+            with self._lock:
+                default_models = self._default_available_models
+            models = entry.available_models or default_models
+            efforts = entry.available_efforts
+            current_model_id = entry.model_id or (self.config.agy_model or None)
+            current_effort_id = entry.effort_id or (self.config.agy_effort or None)
+            current_model_name = self._format_current_model_name_locked(entry)
+
+        card_json = self._build_selector_card_payload(
+            kind=kind,
+            conv_key=conv_key,
+            models=models,
+            efforts=efforts,
+            current_model_id=current_model_id,
+            current_effort_id=current_effort_id,
+            current_model_name=current_model_name,
+        )
+        try:
+            card_id = self.transport.create_card(card_json)
+            sent_msg_id = self.message_sender.send_card_message(
+                chat_id=msg.chat_id,
+                card_id=card_id,
+                reply_to_message_id=msg.message_id,
+                reply_in_thread=bool(msg.thread_id),
+            )
+        except Exception as exc:
+            logger.exception("发送 %s %s失败 (conv_key=%s)", cmd_label, card_noun, conv_key)
+            self._safe_send_text(
+                chat_id=msg.chat_id,
+                text=f"发送{card_noun}失败：{exc}",
+                reply_to_message_id=msg.message_id,
+                reply_in_thread=bool(msg.thread_id),
+                conv_key=conv_key,
+            )
+            return
+
+        if sent_msg_id:
+            with self._lock:
+                self._reply_message_keys.put(sent_msg_id, conv_key)
+                self._selector_cards.put(
+                    sent_msg_id,
+                    _SelectorCardRecord(
+                        kind=kind,
+                        card_id=card_id,
+                        conv_key=conv_key,
+                        models=models,
+                        efforts=efforts,
+                        current_model_name=current_model_name,
+                    ),
+                )
+
+    def _handle_selector_callback(
+        self,
+        *,
+        event: Any,
+        kind: str,
+        target_value: str,
+        conv_key_hint: str | None,
+    ) -> dict[str, Any]:
+        cmd_label = "/model" if kind == "model" else "/effort"
+        action_noun = "模型" if kind == "model" else "思考强度"
+        context = _read_field(event, "context")
+        open_message_id = _read_str(context, "open_message_id")
+        with self._lock:
+            record = (
+                self._selector_cards.get(open_message_id)
+                if open_message_id
+                else None
+            )
+            default_models = self._default_available_models
+
+        conv_key = record.conv_key if record is not None else conv_key_hint
+        if not conv_key:
+            return {
+                "toast": {
+                    "type": "error",
+                    "content": f"未能识别所属会话，请重新发送 {cmd_label}",
+                }
+            }
+
+        try:
+            self._ensure_acp_started()
+        except Exception as exc:
+            logger.exception("卡片切换%s时启动 ACP 失败 (conv_key=%s)", action_noun, conv_key)
+            return {"toast": {"type": "error", "content": f"切换{action_noun}失败：{exc}"}}
+
+        entry = self._get_or_create_entry(conv_key)
+        with entry.dispatch_lock:
+            active_turn = entry.active_turn
+            if active_turn is not None and not active_turn.done_event.is_set():
+                return {
+                    "toast": {
+                        "type": "info",
+                        "content": f"当前有任务正在执行，请等待完成或先停止后再切换{action_noun}",
+                    }
+                }
+
+            if entry.session_id is None:
+                init_kw = (
+                    {"initial_model_id": target_value}
+                    if kind == "model"
+                    else {"initial_effort_id": target_value}
+                )
+                session_id, session_err = self._ensure_entry_session_locked(
+                    entry,
+                    **init_kw,
+                )
+                if session_id is None:
+                    return {
+                        "toast": {
+                            "type": "error",
+                            "content": session_err or f"切换{action_noun}失败",
+                        }
+                    }
+            else:
+                try:
+                    self._apply_session_config_locked(
+                        entry,
+                        entry.session_id,
+                        kind=kind,
+                        target_value=target_value,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "卡片切换%s调用 ACP 配置更新失败 (conv_key=%s, session_id=%s, target=%s)",
+                        action_noun,
+                        conv_key,
+                        entry.session_id,
+                        target_value,
+                    )
+                    return {"toast": {"type": "error", "content": f"切换{action_noun}失败：{exc}"}}
+
+            models_for_card = (
+                entry.available_models
+                or (record.models if record is not None and record.models else default_models)
+            )
+            efforts_for_card = (
+                entry.available_efforts
+                if (kind == "effort" and entry.available_efforts)
+                else (
+                    record.efforts
+                    if record is not None and record.efforts
+                    else entry.available_efforts
+                )
+            )
+            current_model_id = entry.model_id or target_value if kind == "model" else entry.model_id
+            current_effort_id = (
+                entry.effort_id or target_value if kind == "effort" else entry.effort_id
+            )
+            current_model_name = (
+                self._format_current_model_name_locked(entry)
+                or (record.current_model_name if record is not None else None)
+            )
+
+        if kind == "model":
+            matched = next(
+                (opt for opt in models_for_card if opt.model_id == (current_model_id or target_value)),
+                None,
+            )
+            display_name = matched.name if matched is not None else (current_model_id or target_value)
+        else:
+            matched = next(
+                (
+                    opt
+                    for opt in efforts_for_card
+                    if opt.effort_id == (current_effort_id or target_value)
+                ),
+                None,
+            )
+            display_name = matched.name if matched is not None else (current_effort_id or target_value)
+
+        if record is not None:
+            record_kind = record.kind
+            updated_card = self._build_selector_card_payload(
+                kind=record_kind,
+                conv_key=conv_key,
+                models=models_for_card if models_for_card else record.models,
+                efforts=efforts_for_card,
+                current_model_id=current_model_id,
+                current_effort_id=current_effort_id,
+                current_model_name=current_model_name,
+            )
+            try:
+                with record.update_lock:
+                    record.models = models_for_card if models_for_card else record.models
+                    if efforts_for_card or kind == "effort":
+                        record.efforts = efforts_for_card
+                    record.current_model_name = current_model_name
+                    record.sequence += 1
+                    seq = record.sequence
+                    self.transport.update_card(
+                        record.card_id,
+                        updated_card,
+                        sequence=seq,
+                        uuid=self._uuid_factory(),
+                    )
+            except Exception:
+                logger.exception(
+                    "更新 %s 交互卡片失败 (card_id=%s, target=%s)",
+                    cmd_label,
+                    record.card_id,
+                    target_value,
+                )
+
+        return {"toast": {"type": "success", "content": f"已切换{action_noun}为 {display_name}"}}
 
     def _handle_stop_command(self, msg: IncomingMessage, conv_key: str) -> None:
         with self._lock:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -23,6 +23,14 @@ STATUS_ELEMENT_ID = "status_bar"
 CONTENT_ELEMENT_ID = "content_md"
 STOP_BUTTON_ELEMENT_ID = "stop_btn"
 STOP_ACTION_NAME = "stop"
+MODEL_SELECT_ACTION_NAME = "select_model"
+MODEL_STATUS_ELEMENT_ID = "model_status"
+MODEL_HINT_ELEMENT_ID = "model_hint"
+EFFORT_SELECT_ACTION_NAME = "select_effort"
+EFFORT_STATUS_ELEMENT_ID = "effort_status"
+EFFORT_HINT_ELEMENT_ID = "effort_hint"
+ACP_MODEL_CONFIG_ID = "model"
+ACP_EFFORT_CONFIG_ID = "thought_level"
 DEFAULT_MAX_CONTENT_CHARS = 28_000
 
 
@@ -131,6 +139,453 @@ def parse_stop_callback_value(value: Any) -> StopCallbackPayload | None:
     raw_turn_id = value.get("turn_id")
     turn_id = raw_turn_id.strip() if isinstance(raw_turn_id, str) and raw_turn_id.strip() else None
     return StopCallbackPayload(session_id=session_id.strip(), turn_id=turn_id)
+
+
+@dataclass(frozen=True)
+class AcpModelOption:
+    """ACP 返回的单个可选模型元数据。"""
+
+    model_id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class AcpEffortOption:
+    """ACP 返回的单个可选思考强度元数据。"""
+
+    effort_id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ModelSelectCallbackPayload:
+    """解析后的 `/model` 卡片模型切换回调载荷。"""
+
+    model_id: str
+    conv_key: str | None = None
+
+
+@dataclass(frozen=True)
+class EffortSelectCallbackPayload:
+    """解析后的 `/effort` 卡片思考强度切换回调载荷。"""
+
+    effort_id: str
+    conv_key: str | None = None
+
+
+def _find_config_option(payload: Any, *, option_id: str) -> Mapping[str, Any] | None:
+    """从 ACP `session/new` 或 `session/set_config_option` 响应中按 id/category 查找配置项。"""
+    if not isinstance(payload, Mapping):
+        return None
+    raw_options = payload.get("configOptions")
+    if not isinstance(raw_options, list):
+        return None
+    for item in raw_options:
+        if not isinstance(item, Mapping):
+            continue
+        item_id = item.get("id")
+        category = item.get("category")
+        if item_id == option_id or category == option_id:
+            return item
+    return None
+
+
+def has_config_option(payload: Any, *, option_id: str) -> bool:
+    """判断 ACP 返回元数据是否包含指定 `configOptions` 配置项。"""
+    return _find_config_option(payload, option_id=option_id) is not None
+
+
+def _parse_config_option_choices(payload: Any, *, option_id: str) -> tuple[tuple[str, str], ...]:
+    option_block = _find_config_option(payload, option_id=option_id)
+    if option_block is None:
+        return ()
+    raw_choices = option_block.get("options")
+    if not isinstance(raw_choices, list):
+        return ()
+
+    seen_ids: set[str] = set()
+    parsed: list[tuple[str, str]] = []
+    for item in raw_choices:
+        if not isinstance(item, Mapping):
+            continue
+        raw_val = item.get("value")
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            continue
+        val_id = raw_val.strip()
+        if val_id in seen_ids:
+            continue
+        seen_ids.add(val_id)
+        raw_name = item.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else val_id
+        parsed.append((val_id, name))
+    return tuple(parsed)
+
+
+def _parse_config_option_current(payload: Any, *, option_id: str) -> str | None:
+    option_block = _find_config_option(payload, option_id=option_id)
+    if option_block is None:
+        return None
+    raw_current = option_block.get("currentValue")
+    if not isinstance(raw_current, str) or not raw_current.strip():
+        return None
+    return raw_current.strip()
+
+
+def parse_available_models(session_info: Any) -> tuple[AcpModelOption, ...]:
+    """从 ACP 元数据提取并去重可用模型列表；优先读取 `configOptions.model`（仅模型本身）。"""
+    config_choices = _parse_config_option_choices(session_info, option_id=ACP_MODEL_CONFIG_ID)
+    if config_choices:
+        return tuple(AcpModelOption(model_id=mid, name=name) for mid, name in config_choices)
+
+    if not isinstance(session_info, Mapping):
+        return ()
+    models_block = session_info.get("models")
+    if not isinstance(models_block, Mapping):
+        return ()
+    raw_models = models_block.get("availableModels")
+    if not isinstance(raw_models, list):
+        return ()
+
+    seen_ids: set[str] = set()
+    parsed: list[AcpModelOption] = []
+    for item in raw_models:
+        if not isinstance(item, Mapping):
+            continue
+        raw_id = item.get("modelId")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            continue
+        model_id = raw_id.strip()
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        raw_name = item.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else model_id
+        parsed.append(AcpModelOption(model_id=model_id, name=name))
+    return tuple(parsed)
+
+
+def parse_current_model_id(session_info: Any) -> str | None:
+    """从 ACP 元数据提取当前生效模型 ID；优先读取 `configOptions.model.currentValue`。"""
+    config_current = _parse_config_option_current(session_info, option_id=ACP_MODEL_CONFIG_ID)
+    if config_current is not None:
+        return config_current
+
+    if not isinstance(session_info, Mapping):
+        return None
+    models_block = session_info.get("models")
+    if not isinstance(models_block, Mapping):
+        return None
+    raw_current = models_block.get("currentModelId")
+    if not isinstance(raw_current, str) or not raw_current.strip():
+        return None
+    return raw_current.strip()
+
+
+def parse_available_efforts(session_info: Any) -> tuple[AcpEffortOption, ...]:
+    """从 ACP `configOptions.thought_level` 提取当前模型支持的思考强度选项列表。"""
+    choices = _parse_config_option_choices(session_info, option_id=ACP_EFFORT_CONFIG_ID)
+    return tuple(AcpEffortOption(effort_id=eid, name=name) for eid, name in choices)
+
+
+def parse_current_effort_id(session_info: Any) -> str | None:
+    """从 ACP `configOptions.thought_level` 提取当前生效的思考强度标识。"""
+    return _parse_config_option_current(session_info, option_id=ACP_EFFORT_CONFIG_ID)
+
+
+def _build_select_callback_value(
+    *,
+    action: str,
+    field_name: str,
+    value: str,
+    conv_key: str | None = None,
+) -> dict[str, str]:
+    clean_value = value.strip() if isinstance(value, str) else ""
+    if not clean_value:
+        raise ValueError(f"{field_name} 不能为空")
+    clean_action = action.strip() if isinstance(action, str) else ""
+    if not clean_action:
+        raise ValueError("action 不能为空")
+
+    payload: dict[str, str] = {
+        "action": clean_action,
+        field_name: clean_value,
+    }
+    if isinstance(conv_key, str) and conv_key.strip():
+        payload["conv_key"] = conv_key.strip()
+    return payload
+
+
+def _parse_select_callback_value(
+    raw_payload: Any,
+    *,
+    action: str,
+    field_name: str,
+) -> tuple[str, str | None] | None:
+    if not isinstance(raw_payload, Mapping):
+        return None
+    if raw_payload.get("action") != action:
+        return None
+    raw_value = raw_payload.get(field_name)
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        return None
+    raw_conv_key = raw_payload.get("conv_key")
+    conv_key = (
+        raw_conv_key.strip()
+        if isinstance(raw_conv_key, str) and raw_conv_key.strip()
+        else None
+    )
+    return raw_value.strip(), conv_key
+
+
+def build_model_select_callback_value(
+    model_id: str,
+    *,
+    conv_key: str | None = None,
+    action: str = MODEL_SELECT_ACTION_NAME,
+) -> dict[str, str]:
+    """构造飞书卡片按钮 `behaviors[].value` 模型切换回传载荷。"""
+    return _build_select_callback_value(
+        action=action,
+        field_name="model_id",
+        value=model_id,
+        conv_key=conv_key,
+    )
+
+
+def parse_model_select_callback_value(value: Any) -> ModelSelectCallbackPayload | None:
+    """从 `card.action.trigger` 的 `action.value` 解析模型切换指令；不匹配时返回 None。"""
+    parsed = _parse_select_callback_value(
+        value,
+        action=MODEL_SELECT_ACTION_NAME,
+        field_name="model_id",
+    )
+    if parsed is None:
+        return None
+    return ModelSelectCallbackPayload(model_id=parsed[0], conv_key=parsed[1])
+
+
+def build_effort_select_callback_value(
+    effort_id: str,
+    *,
+    conv_key: str | None = None,
+    action: str = EFFORT_SELECT_ACTION_NAME,
+) -> dict[str, str]:
+    """构造飞书卡片按钮 `behaviors[].value` 思考强度切换回传载荷。"""
+    return _build_select_callback_value(
+        action=action,
+        field_name="effort_id",
+        value=effort_id,
+        conv_key=conv_key,
+    )
+
+
+def parse_effort_select_callback_value(value: Any) -> EffortSelectCallbackPayload | None:
+    """从 `card.action.trigger` 的 `action.value` 解析思考强度切换指令；不匹配时返回 None。"""
+    parsed = _parse_select_callback_value(
+        value,
+        action=EFFORT_SELECT_ACTION_NAME,
+        field_name="effort_id",
+    )
+    if parsed is None:
+        return None
+    return EffortSelectCallbackPayload(effort_id=parsed[0], conv_key=parsed[1])
+
+
+@dataclass(frozen=True)
+class _SelectorButtonSpec:
+    element_id: str
+    label: str
+    is_current: bool
+    callback_value: dict[str, str]
+
+
+def _build_selector_button(spec: _SelectorButtonSpec) -> dict[str, Any]:
+    return {
+        "tag": "button",
+        "element_id": spec.element_id,
+        "text": {
+            "tag": "plain_text",
+            "content": f"✓ {spec.label}" if spec.is_current else spec.label,
+        },
+        "type": "primary" if spec.is_current else "default",
+        "size": "small",
+        "width": "fill",
+        "behaviors": [
+            {
+                "type": "callback",
+                "value": spec.callback_value,
+            }
+        ],
+    }
+
+
+def _build_selector_card_json(
+    *,
+    title: str,
+    subtitle: str | None,
+    summary_text: str,
+    status_element_id: str,
+    status_markdown: str,
+    hint_element_id: str,
+    hint_markdown: str,
+    empty_markdown: str,
+    buttons: Sequence[_SelectorButtonSpec],
+) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "element_id": status_element_id,
+            "content": status_markdown,
+        },
+        {"tag": "hr"},
+    ]
+
+    if buttons:
+        for spec in buttons:
+            elements.append(_build_selector_button(spec))
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": hint_element_id,
+                "content": hint_markdown,
+            }
+        )
+    else:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": hint_element_id,
+                "content": empty_markdown,
+            }
+        )
+
+    header: dict[str, Any] = {
+        "title": {"tag": "plain_text", "content": title},
+        "template": "blue",
+    }
+    if isinstance(subtitle, str) and subtitle.strip():
+        header["subtitle"] = {"tag": "plain_text", "content": subtitle.strip()}
+
+    return {
+        "schema": CARD_SCHEMA_VERSION,
+        "config": {
+            "update_multi": True,
+            "summary": {"content": summary_text},
+        },
+        "header": header,
+        "body": {
+            "elements": elements,
+        },
+    }
+
+
+def build_model_selector_card_json(
+    *,
+    models: Sequence[AcpModelOption],
+    current_model_id: str | None = None,
+    conv_key: str | None = None,
+    title: str = "Antigravity 模型选择",
+    subtitle: str | None = None,
+) -> dict[str, Any]:
+    """构造 CardKit 2.0 交互式 `/model` 模型选择卡片 JSON（仅包含模型本身）。"""
+    clean_current = (
+        current_model_id.strip()
+        if isinstance(current_model_id, str) and current_model_id.strip()
+        else None
+    )
+    matched_option = next(
+        (opt for opt in models if opt.model_id == clean_current),
+        None,
+    )
+    if matched_option is not None:
+        current_desc = f"{matched_option.name} (`{matched_option.model_id}`)"
+        summary_model = matched_option.name
+    elif clean_current is not None:
+        current_desc = f"`{clean_current}`"
+        summary_model = clean_current
+    else:
+        current_desc = "未指定（将使用 Antigravity 默认模型）"
+        summary_model = "默认模型"
+
+    buttons = [
+        _SelectorButtonSpec(
+            element_id=f"model_btn_{idx}",
+            label=opt.name,
+            is_current=opt.model_id == clean_current,
+            callback_value=build_model_select_callback_value(opt.model_id, conv_key=conv_key),
+        )
+        for idx, opt in enumerate(models)
+    ]
+    return _build_selector_card_json(
+        title=title,
+        subtitle=subtitle,
+        summary_text=f"模型切换：{summary_model}",
+        status_element_id=MODEL_STATUS_ELEMENT_ID,
+        status_markdown=f"**当前模型**：{current_desc}",
+        hint_element_id=MODEL_HINT_ELEMENT_ID,
+        hint_markdown="💡`/effort` 用于切换思考强度",
+        empty_markdown="⚠️ Antigravity 暂未返回可用模型列表，请稍后重试。",
+        buttons=buttons,
+    )
+
+
+def build_effort_selector_card_json(
+    *,
+    efforts: Sequence[AcpEffortOption],
+    current_effort_id: str | None = None,
+    current_model_name: str | None = None,
+    conv_key: str | None = None,
+    title: str = "Antigravity 思考强度",
+    subtitle: str | None = None,
+) -> dict[str, Any]:
+    """构造 CardKit 2.0 交互式 `/effort` 思考强度选择卡片 JSON。"""
+    clean_current = (
+        current_effort_id.strip()
+        if isinstance(current_effort_id, str) and current_effort_id.strip()
+        else None
+    )
+    matched_option = next(
+        (opt for opt in efforts if opt.effort_id == clean_current),
+        None,
+    )
+    if not efforts:
+        current_desc = "当前模型不支持调节"
+        summary_effort = "不支持调节"
+    elif matched_option is not None:
+        current_desc = f"{matched_option.name} (`{matched_option.effort_id}`)"
+        summary_effort = matched_option.name
+    elif clean_current is not None:
+        current_desc = f"`{clean_current}`"
+        summary_effort = clean_current
+    else:
+        current_desc = "未指定（将使用模型默认思考强度）"
+        summary_effort = "默认强度"
+
+    status_lines: list[str] = []
+    if isinstance(current_model_name, str) and current_model_name.strip():
+        status_lines.append(f"**当前模型**：{current_model_name.strip()}")
+    status_lines.append(f"**当前思考强度**：{current_desc}")
+
+    buttons = [
+        _SelectorButtonSpec(
+            element_id=f"effort_btn_{idx}",
+            label=opt.name,
+            is_current=opt.effort_id == clean_current,
+            callback_value=build_effort_select_callback_value(opt.effort_id, conv_key=conv_key),
+        )
+        for idx, opt in enumerate(efforts)
+    ]
+    return _build_selector_card_json(
+        title=title,
+        subtitle=subtitle,
+        summary_text=f"思考强度：{summary_effort}",
+        status_element_id=EFFORT_STATUS_ELEMENT_ID,
+        status_markdown="\n".join(status_lines),
+        hint_element_id=EFFORT_HINT_ELEMENT_ID,
+        hint_markdown="💡 点击按钮立即调整当前会话思考强度；配置 `.env` 的 `AGY_EFFORT` 可设默认强度（不同模型支持档位可能不同）。",
+        empty_markdown="ℹ️ 当前模型不支持单独调节思考强度；可使用 `/model` 切换到支持思考强度调节的模型后再试。",
+        buttons=buttons,
+    )
 
 
 def build_streaming_card_json(

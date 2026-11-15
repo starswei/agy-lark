@@ -25,6 +25,8 @@ import agy_lark
 from agy_lark import (
     CARD_SCHEMA_VERSION,
     CONTENT_ELEMENT_ID,
+    EFFORT_STATUS_ELEMENT_ID,
+    MODEL_STATUS_ELEMENT_ID,
     STATUS_ELEMENT_ID,
     STOP_BUTTON_ELEMENT_ID,
     AcpError,
@@ -37,12 +39,16 @@ from agy_lark import (
     LarkApiError,
     LarkCardTransport,
     LarkMessageSender,
+    build_effort_select_callback_value,
     build_event_dispatcher,
     build_feishu_client,
+    build_model_select_callback_value,
     build_stop_callback_value,
     build_ws_client,
     extract_incoming_message,
     main,
+    parse_effort_select_callback_value,
+    parse_model_select_callback_value,
 )
 from agy_lark.daemon import _import_lark_oapi
 
@@ -406,6 +412,15 @@ class _FakeAcpClient:
         self.new_session_cwds: list[Any] = []
         self.prompt_calls: list[dict[str, Any]] = []
         self.cancel_calls: list[str] = []
+        self.set_model_calls: list[tuple[str, str]] = []
+        self.set_config_option_calls: list[tuple[str, str, str]] = []
+        self.closed_sessions: list[str] = []
+        self.models_payload: dict[str, Any] | None = None
+        self.use_config_options: bool = False
+        self.config_model: str = "gemini-4-argon"
+        self.config_effort: str = "medium"
+        self.set_model_error: Exception | None = None
+        self.set_config_option_error: Exception | None = None
         self.closed = False
         self.prompt_handler: Any = None
 
@@ -421,6 +436,43 @@ class _FakeAcpClient:
         self._running = False
         self.closed = True
 
+    def _build_config_options(self, model_id: str, effort_id: str) -> list[dict[str, Any]]:
+        opts: list[dict[str, Any]] = [
+            {
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": model_id,
+                "options": [
+                    {"value": "gemini-4-argon", "name": "Gemini 4 Argon"},
+                    {"value": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen"},
+                    {"value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash"},
+                    {"value": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5"},
+                    {"value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"},
+                ],
+            }
+        ]
+        if model_id != "gpt-oss-120b-medium":
+            levels = [
+                {"value": "low", "name": "Low"},
+                {"value": "medium", "name": "Medium"},
+                {"value": "high", "name": "High"},
+            ]
+            if model_id == "gemini-4-hydrogen":
+                levels.append({"value": "xhigh", "name": "Extra"})
+            opts.append(
+                {
+                    "id": "thought_level",
+                    "name": "Thinking Level",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": effort_id,
+                    "options": levels,
+                }
+            )
+        return opts
+
     def new_session(
         self,
         cwd: str | Path | None = None,
@@ -431,7 +483,66 @@ class _FakeAcpClient:
         with self._lock:
             self._session_seq += 1
             self.new_session_cwds.append(cwd)
-            return {"sessionId": f"sess_fake_{self._session_seq}"}
+            info: dict[str, Any] = {"sessionId": f"sess_fake_{self._session_seq}"}
+            if self.models_payload is not None:
+                info["models"] = self.models_payload
+            if self.use_config_options:
+                info["configOptions"] = self._build_config_options(
+                    self.config_model,
+                    self.config_effort,
+                )
+            return info
+
+    def set_model(
+        self,
+        session_id: str,
+        model_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self.set_model_error is not None:
+                raise self.set_model_error
+            self.set_model_calls.append((session_id, model_id))
+            return {}
+
+    def set_config_option(
+        self,
+        session_id: str,
+        config_id: str,
+        value: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self.set_config_option_error is not None:
+                raise self.set_config_option_error
+            self.set_config_option_calls.append((session_id, config_id, value))
+            if config_id == "model":
+                if value == "nonexistent-model":
+                    raise RuntimeError("unknown model")
+                self._session_active_model = value
+                if not hasattr(self, "_session_active_effort"):
+                    self._session_active_effort = self.config_effort
+                if value != "gemini-4-hydrogen" and self._session_active_effort == "xhigh":
+                    self._session_active_effort = "high"
+            elif config_id == "thought_level":
+                active_model = getattr(self, "_session_active_model", self.config_model)
+                allowed = (
+                    {"low", "medium", "high", "xhigh"}
+                    if active_model == "gemini-4-hydrogen"
+                    else (set() if active_model == "gpt-oss-120b-medium" else {"low", "medium", "high"})
+                )
+                if value not in allowed:
+                    raise RuntimeError(f"Thinking level {value!r} not offered for {active_model}")
+                self._session_active_effort = value
+            active_model = getattr(self, "_session_active_model", self.config_model)
+            active_effort = getattr(self, "_session_active_effort", self.config_effort)
+            return {"configOptions": self._build_config_options(active_model, active_effort)}
+
+    def close_session(self, session_id: str) -> None:
+        with self._lock:
+            self.closed_sessions.append(session_id)
 
     def prompt_async(
         self,
@@ -565,6 +676,8 @@ def _make_config(
     *,
     allowed_open_ids: frozenset[str] = frozenset({"ou_allowed_1"}),
     allow_group_mention: bool = False,
+    agy_model: str = "",
+    agy_effort: str = "",
     stream_throttle: float = 0.0,
     turn_timeout_seconds: int = 10,
 ) -> AgyLarkConfig:
@@ -575,6 +688,8 @@ def _make_config(
         allowed_open_ids=allowed_open_ids,
         allow_group_mention=allow_group_mention,
         agy_exe="",
+        agy_model=agy_model,
+        agy_effort=agy_effort,
         default_workspace=Path(tempfile.gettempdir()),
         turn_timeout_seconds=turn_timeout_seconds,
         stream_throttle=stream_throttle,
@@ -1685,6 +1800,385 @@ class TestPackagingAndCli(unittest.TestCase):
             self.assertTrue(
                 any(f"workspace={workspace_dir.resolve()}" in line for line in info_logs.output)
             )
+
+
+def _extract_selector_buttons(card_json: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        elem
+        for elem in card_json["body"]["elements"]
+        if elem.get("tag") == "button"
+    ]
+
+
+class TestModelAndEffortConfigAndCommands(unittest.TestCase):
+    """验证 AGY_MODEL / AGY_EFFORT 默认配置、/model 与 /effort 交互卡片及解耦切换闭环。"""
+
+    @staticmethod
+    def _sample_legacy_models(current: str = "gemini-4-argon-medium") -> dict[str, Any]:
+        return {
+            "currentModelId": current,
+            "availableModels": [
+                {"modelId": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)"},
+                {"modelId": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)"},
+                {"modelId": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)"},
+            ],
+        }
+
+    def test_agy_model_and_effort_auto_apply_on_new_session_and_cleanup_errors(self) -> None:
+        # 1) 使用 configOptions 时，AGY_MODEL 与 AGY_EFFORT 分别通过 set_config_option 应用一次
+        acp = _FakeAcpClient()
+        acp.use_config_options = True
+        transport = _FakeTransport()
+        sender = _FakeMessageSender()
+        daemon = AgyLarkDaemon(
+            _make_config(agy_model="gemini-3.8-flash", agy_effort="high"),
+            acp_client=acp,
+            transport=transport,
+            message_sender=sender,
+        )
+        try:
+            f1 = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_cfg_1", text="你好")
+            )
+            assert f1 is not None
+            f1.result(timeout=5.0)
+            self.assertEqual(
+                acp.set_config_option_calls,
+                [
+                    ("sess_fake_1", "model", "gemini-3.8-flash"),
+                    ("sess_fake_1", "thought_level", "high"),
+                ],
+            )
+            self.assertEqual(acp.set_model_calls, [])
+
+            # 同一会话下一轮消息不重复下发配置
+            f2 = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_cfg_2", text="继续")
+            )
+            assert f2 is not None
+            f2.result(timeout=5.0)
+            self.assertEqual(len(acp.set_config_option_calls), 2)
+        finally:
+            daemon.close()
+
+        # 2) 模型与思考强度均已匹配默认上报时跳过冗余 RPC；无 thought_level 的模型优雅跳过 AGY_EFFORT
+        acp_skip = _FakeAcpClient()
+        acp_skip.use_config_options = True
+        daemon_skip = AgyLarkDaemon(
+            _make_config(agy_model="gpt-oss-120b-medium", agy_effort="high"),
+            acp_client=acp_skip,
+            transport=_FakeTransport(),
+            message_sender=_FakeMessageSender(),
+        )
+        try:
+            fs = daemon_skip.dispatch_message_event(
+                _make_p2_message_event(message_id="om_skip_1", text="你好")
+            )
+            assert fs is not None
+            fs.result(timeout=5.0)
+            self.assertEqual(
+                acp_skip.set_config_option_calls,
+                [("sess_fake_1", "model", "gpt-oss-120b-medium")],
+            )
+        finally:
+            daemon_skip.close()
+
+        # 3) 建会话阶段设置配置失败时关闭僵尸会话、回复错误且不触发 prompt_async
+        acp_err = _FakeAcpClient()
+        acp_err.use_config_options = True
+        sender_err = _FakeMessageSender()
+        daemon_err = AgyLarkDaemon(
+            _make_config(agy_model="nonexistent-model"),
+            acp_client=acp_err,
+            transport=_FakeTransport(),
+            message_sender=sender_err,
+        )
+        try:
+            fe = daemon_err.dispatch_message_event(
+                _make_p2_message_event(message_id="om_err_1", text="你好")
+            )
+            assert fe is not None
+            fe.result(timeout=5.0)
+            self.assertEqual(acp_err.closed_sessions, ["sess_fake_1"])
+            self.assertEqual(acp_err.prompt_calls, [])
+            self.assertIn("设置模型 nonexistent-model 失败", sender_err.text_messages[0]["text"])
+            self.assertIsNone(daemon_err.get_session_id_for_key("p2p:oc_chat_1"))
+        finally:
+            daemon_err.close()
+
+        # 4) 仅返回 legacy models（无 configOptions）时，回退调用 set_model
+        acp_legacy = _FakeAcpClient()
+        acp_legacy.models_payload = self._sample_legacy_models("gemini-4-argon-medium")
+        daemon_legacy = AgyLarkDaemon(
+            _make_config(agy_model="gemini-3.8-flash-medium"),
+            acp_client=acp_legacy,
+            transport=_FakeTransport(),
+            message_sender=_FakeMessageSender(),
+        )
+        try:
+            fl = daemon_legacy.dispatch_message_event(
+                _make_p2_message_event(message_id="om_legacy_1", text="你好")
+            )
+            assert fl is not None
+            fl.result(timeout=5.0)
+            self.assertEqual(acp_legacy.set_model_calls, [("sess_fake_1", "gemini-3.8-flash-medium")])
+            self.assertEqual(acp_legacy.set_config_option_calls, [])
+        finally:
+            daemon_legacy.close()
+
+    def test_slash_model_and_effort_are_decoupled_and_persist_across_restart(self) -> None:
+        acp = _FakeAcpClient()
+        acp.use_config_options = True
+        acp.models_payload = self._sample_legacy_models("gemini-4-argon-medium")
+        transport = _FakeTransport()
+        sender = _FakeMessageSender()
+        daemon = AgyLarkDaemon(
+            _make_config(),
+            acp_client=acp,
+            transport=transport,
+            message_sender=sender,
+        )
+        try:
+            # 1) 发送 /model：只展示纯粹的 5 个基础模型（优先于 legacy 笛卡尔积列表）
+            f_model = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_model_cmd_1", text="  /Model  ")
+            )
+            assert f_model is not None
+            f_model.result(timeout=5.0)
+
+            self.assertEqual(acp.prompt_calls, [])
+            model_msg_id = sender.card_messages[0]["message_id"]
+            model_card = transport.created_cards[0]["card_json"]
+            m_buttons = _extract_selector_buttons(model_card)
+            self.assertEqual(len(m_buttons), 5)
+            self.assertEqual(m_buttons[0]["type"], "primary")
+            self.assertEqual(m_buttons[0]["text"]["content"], "✓ Gemini 4 Argon")
+
+            # 点击选择 Gemini 4 Hydrogen（不改变思考强度，但会解锁 Extra 档位）
+            hydrogen_val = m_buttons[1]["behaviors"][0]["value"]
+            self.assertEqual(
+                parse_model_select_callback_value(hydrogen_val).model_id,  # type: ignore[union-attr]
+                "gemini-4-hydrogen",
+            )
+
+            # 非白名单用户拒绝
+            unauth_evt = _make_p2_card_action_event(
+                operator_open_id="ou_stranger",
+                action_value=hydrogen_val,
+                open_message_id=model_msg_id,
+            )
+            unauth_resp = daemon.handle_card_action(unauth_evt)
+            self.assertEqual(unauth_resp["toast"]["type"], "error")
+            self.assertEqual(acp.set_config_option_calls, [])
+
+            # 白名单点击：仅下发 configOptions.model 并原地刷新 /model 卡片
+            ok_model_evt = _make_p2_card_action_event(
+                operator_open_id="ou_allowed_1",
+                action_value=hydrogen_val,
+                open_message_id=model_msg_id,
+            )
+            ok_model_resp = daemon.handle_card_action(ok_model_evt)
+            self.assertEqual(ok_model_resp["toast"]["type"], "success")
+            self.assertIn("Gemini 4 Hydrogen", ok_model_resp["toast"]["content"])
+            self.assertEqual(
+                acp.set_config_option_calls,
+                [("sess_fake_1", "model", "gemini-4-hydrogen")],
+            )
+            self.assertEqual(transport.update_card_calls[0]["sequence"], 1)
+            m_updated_btns = _extract_selector_buttons(transport.update_card_calls[0]["card_json"])
+            self.assertEqual(m_updated_btns[1]["type"], "primary")
+            self.assertEqual(m_updated_btns[1]["text"]["content"], "✓ Gemini 4 Hydrogen")
+
+            # 2) 发送 /effort：展示 Gemini 4 Hydrogen 专属的 4 个思考强度（含 Extra）
+            f_effort = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_effort_cmd_1", text="  /Effort ")
+            )
+            assert f_effort is not None
+            f_effort.result(timeout=5.0)
+            effort_msg_id = sender.card_messages[1]["message_id"]
+            effort_card = transport.created_cards[1]["card_json"]
+            e_buttons = _extract_selector_buttons(effort_card)
+            self.assertEqual(len(e_buttons), 4)
+            self.assertEqual(e_buttons[1]["type"], "primary")
+            self.assertEqual(e_buttons[1]["text"]["content"], "✓ Medium")
+
+            xhigh_val = e_buttons[3]["behaviors"][0]["value"]
+            self.assertEqual(
+                parse_effort_select_callback_value(xhigh_val).effort_id,  # type: ignore[union-attr]
+                "xhigh",
+            )
+            ok_effort_evt = _make_p2_card_action_event(
+                operator_open_id="ou_allowed_1",
+                action_value=xhigh_val,
+                open_message_id=effort_msg_id,
+            )
+            ok_effort_resp = daemon.handle_card_action(ok_effort_evt)
+            self.assertEqual(ok_effort_resp["toast"]["type"], "success")
+            self.assertIn("Extra", ok_effort_resp["toast"]["content"])
+            self.assertEqual(
+                acp.set_config_option_calls,
+                [
+                    ("sess_fake_1", "model", "gemini-4-hydrogen"),
+                    ("sess_fake_1", "thought_level", "xhigh"),
+                ],
+            )
+            self.assertEqual(transport.update_card_calls[1]["sequence"], 1)
+            e_updated_status = _find_card_element(
+                transport.update_card_calls[1]["card_json"],
+                EFFORT_STATUS_ELEMENT_ID,
+            )
+            assert e_updated_status is not None
+            self.assertIn("Extra (`xhigh`)", e_updated_status["content"])
+
+            # 3) 模拟 ACP 重启：同时恢复本会话选定的模型与思考强度
+            acp._running = False
+            acp._session_active_model = "gemini-4-argon"
+            acp._session_active_effort = "medium"
+            f_next = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_after_restart_1", text="继续对话")
+            )
+            assert f_next is not None
+            f_next.result(timeout=5.0)
+            self.assertEqual(
+                acp.set_config_option_calls[2:],
+                [
+                    ("sess_fake_2", "model", "gemini-4-hydrogen"),
+                    ("sess_fake_2", "thought_level", "xhigh"),
+                ],
+            )
+            self.assertEqual(acp.prompt_calls[0]["session_id"], "sess_fake_2")
+
+            # 4) 在模型本身无思考强度可调时，/effort 弹出说明卡片而非报错
+            gpt_oss_val = m_buttons[4]["behaviors"][0]["value"]
+            gpt_evt = _make_p2_card_action_event(
+                operator_open_id="ou_allowed_1",
+                action_value=gpt_oss_val,
+                open_message_id=model_msg_id,
+            )
+            daemon.handle_card_action(gpt_evt)
+            f_effort_unsup = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_effort_unsup", text="/effort")
+            )
+            assert f_effort_unsup is not None
+            f_effort_unsup.result(timeout=5.0)
+            unsup_card = transport.created_cards[-1]["card_json"]
+            self.assertEqual(_extract_selector_buttons(unsup_card), [])
+        finally:
+            daemon.close()
+
+    def test_slash_commands_with_arguments_pass_through_as_normal_prompts(self) -> None:
+        acp = _FakeAcpClient()
+        acp.use_config_options = True
+        transport = _FakeTransport()
+        sender = _FakeMessageSender()
+        daemon = AgyLarkDaemon(
+            _make_config(),
+            acp_client=acp,
+            transport=transport,
+            message_sender=sender,
+        )
+        try:
+            for idx, text in enumerate(("/model gemini-3.8-flash", "/effort high"), start=1):
+                f = daemon.dispatch_message_event(
+                    _make_p2_message_event(message_id=f"om_arg_{idx}", text=text)
+                )
+                assert f is not None
+                f.result(timeout=5.0)
+
+            self.assertEqual(acp.set_config_option_calls, [])
+            self.assertEqual(
+                [call["prompt"] for call in acp.prompt_calls],
+                ["/model gemini-3.8-flash", "/effort high"],
+            )
+        finally:
+            daemon.close()
+
+    def test_model_and_effort_callbacks_block_active_turn_and_surface_rpc_errors(self) -> None:
+        acp = _FakeAcpClient()
+        acp.use_config_options = True
+        turn_started = threading.Event()
+        release_turn: list[Future[AcpPromptResult]] = []
+
+        def _hold_turn(
+            session_id: str,
+            prompt: Any,
+            on_update: Any,
+            message_id: str | None,
+        ) -> Future[AcpPromptResult]:
+            fut: Future[AcpPromptResult] = Future()
+            release_turn.append(fut)
+            turn_started.set()
+            return fut
+
+        acp.prompt_handler = _hold_turn
+        transport = _FakeTransport()
+        sender = _FakeMessageSender()
+        daemon = AgyLarkDaemon(
+            _make_config(),
+            acp_client=acp,
+            transport=transport,
+            message_sender=sender,
+        )
+        try:
+            f_turn = daemon.dispatch_message_event(
+                _make_p2_message_event(message_id="om_active_1", text="长任务进行中")
+            )
+            assert f_turn is not None
+            self.assertTrue(turn_started.wait(timeout=3.0))
+
+            # 在途任务执行期间仍可弹出 /model 与 /effort 卡片
+            for cmd_id, cmd_text in (("om_busy_m", "/model"), ("om_busy_e", "/effort")):
+                fc = daemon.dispatch_message_event(
+                    _make_p2_message_event(message_id=cmd_id, text=cmd_text)
+                )
+                assert fc is not None
+                fc.result(timeout=5.0)
+            model_card_msg_id = sender.card_messages[-2]["message_id"]
+            effort_card_msg_id = sender.card_messages[-1]["message_id"]
+
+            # 点击模型或思考强度按钮均被拦截并提示 info toast
+            m_click = build_model_select_callback_value("gemini-3.8-flash", conv_key="p2p:oc_chat_1")
+            e_click = build_effort_select_callback_value("high", conv_key="p2p:oc_chat_1")
+            for msg_id, val in ((model_card_msg_id, m_click), (effort_card_msg_id, e_click)):
+                evt = _make_p2_card_action_event(
+                    operator_open_id="ou_allowed_1",
+                    action_value=val,
+                    open_message_id=msg_id,
+                )
+                resp = daemon.handle_card_action(evt)
+                self.assertEqual(resp["toast"]["type"], "info")
+                self.assertIn("当前有任务正在执行", resp["toast"]["content"])
+            self.assertEqual(acp.set_config_option_calls, [])
+
+            # 放行并结束在途回合后，模拟底层 set_config_option 抛错
+            release_turn[0].set_result(
+                AcpPromptResult(
+                    session_id="sess_fake_1",
+                    stop_reason="end_turn",
+                    text="done",
+                    thoughts="",
+                    updates=[],
+                )
+            )
+            f_turn.result(timeout=5.0)
+
+            acp.set_config_option_error = RuntimeError("invalid effort level")
+            err_evt = _make_p2_card_action_event(
+                operator_open_id="ou_allowed_1",
+                action_value=e_click,
+                open_message_id=effort_card_msg_id,
+            )
+            err_resp = daemon.handle_card_action(err_evt)
+            self.assertEqual(err_resp["toast"]["type"], "error")
+            self.assertIn("invalid effort level", err_resp["toast"]["content"])
+            effort_card_id = sender.card_messages[-1]["card_id"]
+            self.assertFalse(
+                any(call["card_id"] == effort_card_id for call in transport.update_card_calls)
+            )
+        finally:
+            if release_turn and not release_turn[0].done():
+                release_turn[0].cancel()
+            daemon.close()
 
 
 def tearDownModule() -> None:

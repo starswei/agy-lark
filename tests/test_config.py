@@ -245,5 +245,48 @@ class TestLoadConfig(unittest.TestCase):
             load_config(dotenv_path=None, environ=bad_bool_env, resolve_exe=False)
 
 
+    def test_agy_model_and_effort_default_empty_and_load_from_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "FEISHU_APP_ID=cli_test_model",
+                        "FEISHU_APP_SECRET=sec_test_model",
+                        "AGY_LARK_ALLOWED_OPEN_IDS=ou_test_user",
+                        'AGY_MODEL="  gemini-3.8-flash  "',
+                        'AGY_EFFORT="  HIGH  "',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cfg = load_config(dotenv_path=env_file, environ={}, resolve_exe=False)
+            self.assertEqual(cfg.agy_model, "gemini-3.8-flash")
+            self.assertEqual(cfg.agy_effort, "high")
+
+            cfg_override = load_config(
+                dotenv_path=env_file,
+                environ={"AGY_MODEL": "claude-opus-5-5", "AGY_EFFORT": "xhigh"},
+                resolve_exe=False,
+            )
+            self.assertEqual(cfg_override.agy_model, "claude-opus-5-5")
+            self.assertEqual(cfg_override.agy_effort, "xhigh")
+
+            env_empty = Path(tmp) / ".empty.env"
+            env_empty.write_text(
+                "\n".join(
+                    [
+                        "FEISHU_APP_ID=cli_test_model",
+                        "FEISHU_APP_SECRET=sec_test_model",
+                        "AGY_LARK_ALLOWED_OPEN_IDS=ou_test_user",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cfg_default = load_config(dotenv_path=env_empty, environ={}, resolve_exe=False)
+            self.assertEqual(cfg_default.agy_model, "")
+            self.assertEqual(cfg_default.agy_effort, "")
+
+
 if __name__ == "__main__":
     unittest.main()

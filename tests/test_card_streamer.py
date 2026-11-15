@@ -12,21 +12,42 @@ import unittest
 from agy_lark import (
     CARD_SCHEMA_VERSION,
     CONTENT_ELEMENT_ID,
+    EFFORT_HINT_ELEMENT_ID,
+    EFFORT_SELECT_ACTION_NAME,
+    EFFORT_STATUS_ELEMENT_ID,
+    MODEL_HINT_ELEMENT_ID,
+    MODEL_SELECT_ACTION_NAME,
+    MODEL_STATUS_ELEMENT_ID,
     STATUS_ELEMENT_ID,
     STOP_ACTION_NAME,
     STOP_BUTTON_ELEMENT_ID,
+    AcpEffortOption,
+    AcpModelOption,
     AcpPromptResult,
     AcpSessionUpdate,
     CardRunState,
     CardTransport,
+    EffortSelectCallbackPayload,
+    ModelSelectCallbackPayload,
     StopCallbackPayload,
     StreamingCardUpdater,
     build_create_card_payload,
+    build_effort_select_callback_value,
+    build_effort_selector_card_json,
+    build_model_select_callback_value,
+    build_model_selector_card_json,
     build_stop_callback_value,
     build_stream_content_payload,
     build_streaming_card_json,
     build_update_card_payload,
     build_update_settings_payload,
+    has_config_option,
+    parse_available_efforts,
+    parse_available_models,
+    parse_current_effort_id,
+    parse_current_model_id,
+    parse_effort_select_callback_value,
+    parse_model_select_callback_value,
     parse_stop_callback_value,
 )
 from agy_lark.card_streamer import DEFAULT_MAX_CONTENT_CHARS
@@ -772,6 +793,210 @@ class TestStreamingCardUpdaterLifecycle(unittest.TestCase):
         seqs = transport.all_sequences()
         self.assertGreaterEqual(len(seqs), 2)
         self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
+
+
+class TestModelAndEffortSelectorCards(unittest.TestCase):
+    """验证 ACP 模型与思考强度元数据解析、/model 与 /effort CardKit 2.0 卡片结构及回调载荷编解码。"""
+
+    def test_parse_config_options_prefers_base_models_and_efforts_with_legacy_fallback(self) -> None:
+        session_info = {
+            "sessionId": "sess-mock-1",
+            "models": {
+                "currentModelId": "gemini-4-argon-medium",
+                "availableModels": [
+                    {"modelId": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)"},
+                    {"modelId": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)"},
+                ],
+            },
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "currentValue": " gemini-3.8-flash ",
+                    "options": [
+                        {"value": "gemini-4-argon", "name": "Gemini 4 Argon"},
+                        {"value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash"},
+                        {"value": "gemini-3.8-flash", "name": "Duplicate Ignored"},
+                        {"value": "  ", "name": "Invalid Blank"},
+                    ],
+                },
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "currentValue": " xhigh ",
+                    "options": [
+                        {"value": "low", "name": "Low"},
+                        {"value": "medium", "name": "Medium"},
+                        {"value": "high", "name": "High"},
+                        {"value": "xhigh", "name": "Extra"},
+                    ],
+                },
+            ],
+        }
+        self.assertTrue(has_config_option(session_info, option_id="model"))
+        self.assertTrue(has_config_option(session_info, option_id="thought_level"))
+        self.assertEqual(
+            parse_available_models(session_info),
+            (
+                AcpModelOption("gemini-4-argon", "Gemini 4 Argon"),
+                AcpModelOption("gemini-3.8-flash", "Gemini 3.8 Flash"),
+            ),
+        )
+        self.assertEqual(parse_current_model_id(session_info), "gemini-3.8-flash")
+        self.assertEqual(
+            parse_available_efforts(session_info),
+            (
+                AcpEffortOption("low", "Low"),
+                AcpEffortOption("medium", "Medium"),
+                AcpEffortOption("high", "High"),
+                AcpEffortOption("xhigh", "Extra"),
+            ),
+        )
+        self.assertEqual(parse_current_effort_id(session_info), "xhigh")
+
+        # 若无 configOptions（兼容旧格式），则回退至 models.availableModels；effort 返回空
+        legacy_only = {
+            "models": {
+                "currentModelId": " legacy-model ",
+                "availableModels": [{"modelId": "legacy-model"}],
+            }
+        }
+        self.assertFalse(has_config_option(legacy_only, option_id="model"))
+        self.assertEqual(
+            parse_available_models(legacy_only),
+            (AcpModelOption("legacy-model", "legacy-model"),),
+        )
+        self.assertEqual(parse_current_model_id(legacy_only), "legacy-model")
+        self.assertEqual(parse_available_efforts(legacy_only), ())
+        self.assertIsNone(parse_current_effort_id(legacy_only))
+        self.assertEqual(parse_available_models({}), ())
+        self.assertIsNone(parse_current_model_id({}))
+
+    def test_callback_value_round_trip_and_validation_for_model_and_effort(self) -> None:
+        m_val = build_model_select_callback_value(" gemini-3.8-flash ", conv_key=" p2p:oc_mock_1 ")
+        self.assertEqual(
+            m_val,
+            {"action": MODEL_SELECT_ACTION_NAME, "model_id": "gemini-3.8-flash", "conv_key": "p2p:oc_mock_1"},
+        )
+        self.assertEqual(
+            parse_model_select_callback_value(m_val),
+            ModelSelectCallbackPayload(model_id="gemini-3.8-flash", conv_key="p2p:oc_mock_1"),
+        )
+
+        e_val = build_effort_select_callback_value(" high ", conv_key=" p2p:oc_mock_1 ")
+        self.assertEqual(
+            e_val,
+            {"action": EFFORT_SELECT_ACTION_NAME, "effort_id": "high", "conv_key": "p2p:oc_mock_1"},
+        )
+        self.assertEqual(
+            parse_effort_select_callback_value(e_val),
+            EffortSelectCallbackPayload(effort_id="high", conv_key="p2p:oc_mock_1"),
+        )
+        self.assertEqual(
+            parse_effort_select_callback_value(build_effort_select_callback_value("low")),
+            EffortSelectCallbackPayload(effort_id="low", conv_key=None),
+        )
+
+        with self.assertRaises(ValueError):
+            build_model_select_callback_value("  ")
+        with self.assertRaises(ValueError):
+            build_effort_select_callback_value("  ")
+        with self.assertRaises(ValueError):
+            build_effort_select_callback_value("low", action=" ")
+
+        self.assertIsNone(parse_model_select_callback_value(e_val))
+        self.assertIsNone(parse_effort_select_callback_value(m_val))
+        self.assertIsNone(parse_effort_select_callback_value(None))
+        self.assertIsNone(
+            parse_effort_select_callback_value({"action": EFFORT_SELECT_ACTION_NAME, "effort_id": " "})
+        )
+
+    def test_build_model_and_effort_selector_cards_layout_and_empty_fallbacks(self) -> None:
+        models = (
+            AcpModelOption("model-a", "Model Alpha"),
+            AcpModelOption("model-b", "Model Beta"),
+            AcpModelOption("model-c", "Model Gamma"),
+        )
+        model_card = build_model_selector_card_json(
+            models=models,
+            current_model_id="model-b",
+            conv_key="p2p:oc_mock_1",
+            subtitle="会话演示",
+        )
+        self.assertEqual(model_card["schema"], CARD_SCHEMA_VERSION)
+        self.assertTrue(model_card["config"]["update_multi"])
+        self.assertEqual(model_card["header"]["subtitle"]["content"], "会话演示")
+        m_status = _find_element(model_card, MODEL_STATUS_ELEMENT_ID)
+        m_hint = _find_element(model_card, MODEL_HINT_ELEMENT_ID)
+        assert m_status is not None and m_hint is not None
+        self.assertIn("Model Beta", m_status["content"])
+        self.assertIn("/effort", m_hint["content"])
+
+        self.assertEqual(
+            [e for e in _extract_elements(model_card) if e.get("tag") == "column_set"],
+            [],
+        )
+        m_buttons = [e for e in _extract_elements(model_card) if e.get("tag") == "button"]
+        self.assertEqual(len(m_buttons), 3)
+        for idx, btn in enumerate(m_buttons):
+            self.assertEqual(btn["width"], "fill")
+            self.assertEqual(btn["element_id"], f"model_btn_{idx}")
+            self.assertRegex(btn["element_id"], _VALID_ELEMENT_ID_RE)
+        self.assertEqual(m_buttons[1]["type"], "primary")
+        self.assertEqual(m_buttons[1]["text"]["content"], "✓ Model Beta")
+
+        efforts = (
+            AcpEffortOption("low", "Low"),
+            AcpEffortOption("medium", "Medium"),
+            AcpEffortOption("high", "High"),
+            AcpEffortOption("xhigh", "Extra"),
+        )
+        effort_card = build_effort_selector_card_json(
+            efforts=efforts,
+            current_effort_id="xhigh",
+            current_model_name="Gemini 4 Hydrogen (`gemini-4-hydrogen`)",
+            conv_key="p2p:oc_mock_1",
+        )
+        e_status = _find_element(effort_card, EFFORT_STATUS_ELEMENT_ID)
+        assert e_status is not None
+        self.assertIn("Gemini 4 Hydrogen", e_status["content"])
+        self.assertIn("Extra (`xhigh`)", e_status["content"])
+        self.assertEqual(
+            [e for e in _extract_elements(effort_card) if e.get("tag") == "column_set"],
+            [],
+        )
+        e_buttons = [e for e in _extract_elements(effort_card) if e.get("tag") == "button"]
+        self.assertEqual(len(e_buttons), 4)
+        for idx, btn in enumerate(e_buttons):
+            self.assertEqual(btn["width"], "fill")
+            self.assertEqual(btn["element_id"], f"effort_btn_{idx}")
+            self.assertRegex(btn["element_id"], _VALID_ELEMENT_ID_RE)
+        self.assertEqual(e_buttons[3]["type"], "primary")
+        self.assertEqual(e_buttons[3]["text"]["content"], "✓ Extra")
+        self.assertEqual(
+            parse_effort_select_callback_value(e_buttons[2]["behaviors"][0]["value"]),
+            EffortSelectCallbackPayload(effort_id="high", conv_key="p2p:oc_mock_1"),
+        )
+
+        # 不支持思考强度调节时的提示卡片
+        unsupported_card = build_effort_selector_card_json(
+            efforts=(),
+            current_effort_id=None,
+            current_model_name="GPT-OSS 120B (Medium)",
+        )
+        u_status = _find_element(unsupported_card, EFFORT_STATUS_ELEMENT_ID)
+        u_hint = _find_element(unsupported_card, EFFORT_HINT_ELEMENT_ID)
+        assert u_status is not None and u_hint is not None
+        self.assertIn("不支持调节", u_status["content"])
+        self.assertIn("不支持单独调节思考强度", u_hint["content"])
+        self.assertEqual(
+            [
+                e
+                for e in _extract_elements(unsupported_card)
+                if e.get("tag") in ("column_set", "button")
+            ],
+            [],
+        )
 
 
 if __name__ == "__main__":

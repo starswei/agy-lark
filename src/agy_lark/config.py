@@ -201,6 +201,8 @@ class AgyLarkConfig:
     allowed_open_ids: frozenset[str] = field(default_factory=frozenset)
     allow_group_mention: bool = False
     agy_exe: str = ""
+    agy_model: str = ""
+    agy_effort: str = ""
     default_workspace: Path = field(default_factory=Path.cwd)
     turn_timeout_seconds: int = DEFAULT_TURN_TIMEOUT_SECONDS
     stream_throttle: float = DEFAULT_STREAM_THROTTLE
@@ -299,6 +301,8 @@ def load_config(
     raw_data_dir = env.get("AGY_LARK_DATA_DIR", "").strip() or DEFAULT_DATA_DIR
     data_dir = _resolve_config_path(raw_data_dir, base_dir=_source_base_dir("AGY_LARK_DATA_DIR"))
 
+    agy_model = env.get("AGY_MODEL", "").strip()
+    agy_effort = env.get("AGY_EFFORT", "").strip().lower()
     log_level = (env.get("AGY_LARK_LOG_LEVEL", "").strip() or DEFAULT_LOG_LEVEL).upper()
 
     return AgyLarkConfig(
@@ -308,6 +312,8 @@ def load_config(
         allowed_open_ids=allowed_open_ids,
         allow_group_mention=allow_group_mention,
         agy_exe=agy_exe,
+        agy_model=agy_model,
+        agy_effort=agy_effort,
         default_workspace=default_workspace,
         turn_timeout_seconds=turn_timeout_seconds,
         stream_throttle=stream_throttle,
