@@ -140,13 +140,6 @@ python -W error -m unittest discover -s tests -v
 
 **严禁将 `.env` 或运行时状态文件提交到公开仓库**。
 
-## 开发路线图
-
-- [x] **阶段 1**：初始化仓库、独立 `.venv` 虚拟环境与安全 `.gitignore`
-- [x] **阶段 2**：MIT 开源协议、`.env.example` 规范、`pyproject.toml`、双语 README 与项目 Logo 资源
-- [x] **`v0.1.0-beta`**（`#1`、`#2`）：`.env` 配置加载、Fail-Closed `open_id` 鉴权、跨平台 `agy` 自动发现，以及原生 `agy acp --stdio` 协议内核（支持运行中插话与 `session/cancel` 及时停止）
-- [x] **`v0.1.0`**（`#3`、`#4`、`#5`）：CardKit 2.0 节流流式卡片、`lark-oapi` 单进程 WebSocket 守护服务、`agy-lark` CLI 入口、`AGY_MODEL` / `AGY_EFFORT` 环境预设，以及 `/model`、`/effort` 单列交互选择卡片
-
 ## License
 
 [MIT](LICENSE)

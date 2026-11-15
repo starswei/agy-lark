@@ -142,13 +142,6 @@ python -W error -m unittest discover -s tests -v
 
 **Never commit `.env` or runtime state files to a public repository.**
 
-## Roadmap
-
-- [x] **Stage 1**: Repository initialization, isolated `.venv`, and strict `.gitignore` hygiene
-- [x] **Stage 2**: MIT license, `.env.example` spec, `pyproject.toml`, bilingual README, and SVG assets
-- [x] **v0.1.0-beta (`#1`, `#2`)**: `.env` config loader, Fail-Closed `open_id` auth, cross-platform `agy` discovery, and native `agy acp --stdio` kernel with mid-turn steering & `session/cancel`
-- [x] **v0.1.0 (`#3`, `#4`, `#5`)**: CardKit 2.0 throttled streaming cards, `lark-oapi` single-process WebSocket daemon, `agy-lark` CLI entrypoint, `AGY_MODEL` / `AGY_EFFORT` presets, and single-column `/model` & `/effort` interactive selector cards
-
 ## License
 
 [MIT](LICENSE)
