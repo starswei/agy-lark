@@ -821,6 +821,64 @@ class TestSdkIntegrationAndLazyImport(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
 
+    def test_import_lark_oapi_isolates_pkg_resources_deprecation_warnings(self) -> None:
+        repo_src = str(Path(__file__).resolve().parents[1] / "src")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            (tmp_path / "pkg_resources.py").write_text(
+                "\n".join(
+                    [
+                        "import warnings",
+                        "",
+                        "def _warn(name: str) -> None:",
+                        "    warnings.warn(",
+                        '        f"Deprecated call to `pkg_resources.declare_namespace({name!r})`.",',
+                        "        DeprecationWarning,",
+                        "        stacklevel=2,",
+                        "    )",
+                        "",
+                        "def declare_namespace(name: str) -> None:",
+                        "    _warn(name)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (tmp_path / "lark_oapi.py").write_text(
+                "\n".join(
+                    [
+                        "import warnings",
+                        'warnings.warn("direct lark_oapi deprecation", DeprecationWarning, stacklevel=1)',
+                        '__import__("pkg_resources").declare_namespace("lark_oapi.ws.pb")',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = dict(os.environ)
+            env["PYTHONPATH"] = f"{tmp_dir}{os.pathsep}{repo_src}"
+            script = (
+                "import warnings; "
+                "from agy_lark.daemon import _import_lark_oapi; "
+                "mod = _import_lark_oapi(); "
+                "assert mod.__name__ == 'lark_oapi'; "
+                "raised = False\n"
+                "try:\n"
+                "    warnings.warn('outside warning', DeprecationWarning, stacklevel=1)\n"
+                "except DeprecationWarning:\n"
+                "    raised = True\n"
+                "assert raised, 'expected DeprecationWarning to still fail under -W error outside import'"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-W", "error", "-c", script],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+
     def test_lark_card_transport_builds_valid_cardkit_v1_requests_and_errors(self) -> None:
         _import_lark_oapi()
         from lark_oapi.api.cardkit.v1 import Card

@@ -235,6 +235,13 @@ def _import_lark_oapi() -> Any:
             category=DeprecationWarning,
             module=r"^lark_oapi(\.|$)",
         )
+        # lark_oapi.ws.pb.google 导入时会调用 pkg_resources.declare_namespace，
+        # 该弃用警告归属 module="pkg_resources"，需同时在此短暂导入窗口内隔离。
+        warnings.filterwarnings(
+            "ignore",
+            category=DeprecationWarning,
+            module=r"^pkg_resources(\.|$)",
+        )
         import lark_oapi as lark
     return lark
 
