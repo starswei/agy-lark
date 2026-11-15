@@ -170,10 +170,66 @@ class TestLoadConfig(unittest.TestCase):
             self.assertEqual(cfg.default_workspace, ws_dir)
             self.assertEqual(cfg.turn_timeout_seconds, 120)
             self.assertEqual(cfg.stream_throttle, 0.5)
-            self.assertEqual(cfg.data_dir, Path(".custom-agy"))
+            self.assertEqual(cfg.data_dir, (tmp_path / ".custom-agy").resolve())
             self.assertEqual(cfg.log_level, "DEBUG")
             self.assertTrue(cfg.is_open_id_allowed("ou_1"))
             self.assertFalse(cfg.is_open_id_allowed("ou_unknown"))
+
+    def test_relative_paths_in_dotenv_resolve_against_dotenv_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "portable_runtime"
+            bin_dir = runtime_dir / "bin"
+            ws_dir = runtime_dir / "workspace"
+            bin_dir.mkdir(parents=True)
+            ws_dir.mkdir(parents=True)
+            exe = _create_mock_agy(bin_dir)
+
+            env_file = runtime_dir / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        f"AGY_EXE=./bin/{exe.name}",
+                        "AGY_DEFAULT_WORKSPACE=./workspace",
+                        "AGY_LARK_DATA_DIR=./.agy-lark",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            cfg = load_config(dotenv_path=env_file, environ={"PATH": ""}, resolve_exe=True)
+            self.assertEqual(Path(cfg.agy_exe), exe.resolve())
+            self.assertEqual(cfg.default_workspace, ws_dir.resolve())
+            self.assertEqual(cfg.data_dir, (runtime_dir / ".agy-lark").resolve())
+
+    def test_external_environ_override_and_empty_workspace_keep_cwd_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime_cfg"
+            runtime_dir.mkdir()
+            env_file = runtime_dir / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "AGY_DEFAULT_WORKSPACE=./workspace",
+                        "AGY_LARK_DATA_DIR=./.agy-lark",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            # 外部环境变量优先级高于 .env，其中的相对路径应保持自身相对形式（由 CWD 解析）
+            override_env = {
+                "AGY_DEFAULT_WORKSPACE": "./from_shell_cwd",
+                "AGY_LARK_DATA_DIR": "./shell_data",
+            }
+            cfg_override = load_config(dotenv_path=env_file, environ=override_env, resolve_exe=False)
+            self.assertEqual(cfg_override.default_workspace, Path("./from_shell_cwd"))
+            self.assertEqual(cfg_override.data_dir, Path("./shell_data"))
+
+            # .env 中留空 AGY_DEFAULT_WORKSPACE 时仍默认回退 Path.cwd()
+            empty_ws_env = runtime_dir / ".empty.env"
+            empty_ws_env.write_text("AGY_DEFAULT_WORKSPACE=\n", encoding="utf-8")
+            cfg_empty = load_config(dotenv_path=empty_ws_env, environ={}, resolve_exe=False)
+            self.assertEqual(cfg_empty.default_workspace, Path.cwd())
 
     def test_load_config_validation_errors(self) -> None:
         base_env = {"AGY_TURN_TIMEOUT_SECONDS": "0"}

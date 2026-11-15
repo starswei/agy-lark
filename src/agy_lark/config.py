@@ -212,6 +212,26 @@ class AgyLarkConfig:
         return is_authorized_open_id(open_id, self.allowed_open_ids)
 
 
+def _looks_like_explicit_path(raw_value: str) -> bool:
+    """判断配置值是否为显式路径（区别于依赖系统 PATH 查找的裸命令名）。"""
+    return (
+        "/" in raw_value
+        or "\\" in raw_value
+        or raw_value.startswith((".", "~"))
+        or (len(raw_value) >= 2 and raw_value[1] == ":")
+    )
+
+
+def _resolve_config_path(raw_value: str, *, base_dir: Path | None) -> Path:
+    """展开用户主目录 ~；若仍为相对路径且提供了基准目录，则相对基准目录解析为规范路径。"""
+    expanded = Path(os.path.expanduser(raw_value))
+    if expanded.is_absolute():
+        return expanded
+    if base_dir is not None:
+        return (base_dir / expanded).resolve()
+    return expanded
+
+
 def load_config(
     *,
     dotenv_path: str | Path | None = ".env",
@@ -220,8 +240,21 @@ def load_config(
 ) -> AgyLarkConfig:
     """加载 .env 与环境变量，返回校验后的 AgyLarkConfig 实例。"""
     env: MutableMapping[str, str] = os.environ if environ is None else environ
+    preexisting_keys = set(env.keys())
+    parsed_dotenv: dict[str, str] = {}
+    dotenv_base_dir: Path | None = None
+
     if dotenv_path is not None:
-        load_dotenv_file(dotenv_path, environ=env, override=False)
+        dotenv_file = Path(dotenv_path)
+        if dotenv_file.is_file():
+            dotenv_base_dir = dotenv_file.resolve().parent
+            parsed_dotenv = load_dotenv_file(dotenv_file, environ=env, override=False)
+
+    def _source_base_dir(key: str) -> Path | None:
+        """仅当生效配置来自 .env 文件（未被外部环境变量提前占坑）时返回 .env 所在目录。"""
+        if dotenv_base_dir is not None and key not in preexisting_keys and key in parsed_dotenv:
+            return dotenv_base_dir
+        return None
 
     feishu_app_id = env.get("FEISHU_APP_ID", "").strip()
     feishu_app_secret = env.get("FEISHU_APP_SECRET", "").strip()
@@ -235,6 +268,10 @@ def load_config(
     )
 
     raw_agy_exe = env.get("AGY_EXE", "").strip()
+    if raw_agy_exe and _looks_like_explicit_path(raw_agy_exe):
+        exe_base_dir = _source_base_dir("AGY_EXE")
+        if exe_base_dir is not None:
+            raw_agy_exe = str(_resolve_config_path(raw_agy_exe, base_dir=exe_base_dir))
     agy_exe = (
         resolve_agy_executable(raw_agy_exe, path_env=env.get("PATH"))
         if resolve_exe
@@ -243,7 +280,9 @@ def load_config(
 
     raw_workspace = env.get("AGY_DEFAULT_WORKSPACE", "").strip()
     default_workspace = (
-        Path(os.path.expanduser(raw_workspace)) if raw_workspace else Path.cwd()
+        _resolve_config_path(raw_workspace, base_dir=_source_base_dir("AGY_DEFAULT_WORKSPACE"))
+        if raw_workspace
+        else Path.cwd()
     )
 
     turn_timeout_seconds = _parse_positive_int_env(
@@ -258,7 +297,7 @@ def load_config(
     )
 
     raw_data_dir = env.get("AGY_LARK_DATA_DIR", "").strip() or DEFAULT_DATA_DIR
-    data_dir = Path(os.path.expanduser(raw_data_dir))
+    data_dir = _resolve_config_path(raw_data_dir, base_dir=_source_base_dir("AGY_LARK_DATA_DIR"))
 
     log_level = (env.get("AGY_LARK_LOG_LEVEL", "").strip() or DEFAULT_LOG_LEVEL).upper()
 
