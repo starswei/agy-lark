@@ -37,7 +37,7 @@ delivering live streaming cards, mid-turn steering, timely cancellation via `ses
 | **Timely Cancellation** | Card stop actions or `/stop` issue native ACP `session/cancel` for the active turn | Halts the current task cleanly while keeping full conversation context intact |
 | **Live Streaming Cards** | Sends and updates CardKit 2.0 interactive cards in-process via `lark-oapi` with throttling | Real-time progress and Markdown replies in one clean card |
 | **Model & Effort Control** | Supports `AGY_MODEL` / `AGY_EFFORT` defaults plus decoupled `/model` & `/effort` single-column cards | Switch models or multi-level thinking intensity interactively per conversation |
-| **Lightweight Setup** | Runs in a single Python process over WebSocket and auto-discovers `agy` from `PATH` | Requires only Python 3.10+, `lark-oapi`, and basic app configuration to start |
+| **Lightweight Setup** | Runs in a single Python process over WebSocket and auto-discovers `agy` from `PATH` | Requires only Python 3.11+, `lark-oapi`, and basic app configuration to start |
 
 ## Architecture
 
@@ -71,7 +71,7 @@ Uncomment after adding real Feishu / Lark card captures under `docs/assets/`:
 
 ### Prerequisites
 
-1. **Python 3.10+** (developed & verified with `3.13.9`)
+1. **Python 3.11+** (developed & verified with `3.13.9`)
 2. **Antigravity CLI (`agy`)** installed locally and authenticated, with `agy` available on `PATH` (or configured via `AGY_EXE`)
 3. **A Feishu / Lark Custom App** with Bot capability enabled:
    - Event subscription delivery mode: **Persistent Connection (WebSocket)**

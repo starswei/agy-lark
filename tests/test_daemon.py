@@ -15,13 +15,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from types import SimpleNamespace
 from typing import Any
-
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 兼容分支
-    tomllib = None  # type: ignore[assignment]
 import unittest
 from unittest import mock
 
@@ -1603,38 +1599,14 @@ class TestSteeringAndCancellation(unittest.TestCase):
             daemon.close()
 
 
-def _parse_pyproject_scripts(text: str, *, use_tomllib: bool = True) -> dict[str, str]:
-    """解析 pyproject.toml 中的 `[project.scripts]`，在 Python 3.10 下兼容回退。"""
-    if use_tomllib and tomllib is not None:
-        raw_scripts = tomllib.loads(text).get("project", {}).get("scripts", {})
-        return {str(k): str(v) for k, v in raw_scripts.items()}
-
-    scripts: dict[str, str] = {}
-    in_scripts = False
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        if line.startswith("["):
-            in_scripts = line == "[project.scripts]"
-            continue
-        if in_scripts and "=" in line:
-            key, _, value = line.partition("=")
-            scripts[key.strip().strip("\"'")] = value.strip().strip("\"'")
-    return scripts
-
-
 class TestPackagingAndCli(unittest.TestCase):
     """验证 pyproject.toml 脚本注册、公共导出与 main() CLI 解析。"""
 
     def test_pyproject_scripts_and_package_exports(self) -> None:
-        pyproject_text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
-        scripts = _parse_pyproject_scripts(pyproject_text)
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        scripts = data.get("project", {}).get("scripts", {})
         self.assertEqual(scripts.get("agy-lark"), "agy_lark.daemon:main")
-        # 同时验证 Python 3.10 无 tomllib 时的回退解析结果一致
-        self.assertEqual(_parse_pyproject_scripts(pyproject_text, use_tomllib=False), scripts)
 
         for symbol in (
             "AgyLarkDaemon",
