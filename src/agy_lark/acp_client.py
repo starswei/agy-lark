@@ -184,7 +184,7 @@ class AgyAcpClient:
         on_permission_request: Callable[[dict[str, Any]], str] | None = None,
         default_timeout: float = float(DEFAULT_TURN_TIMEOUT_SECONDS),
         client_name: str = "agy-lark",
-        client_version: str = "0.1.0a1",
+        client_version: str = "0.1.0",
     ) -> None:
         self._explicit_executable = executable
         self.executable: str | None = executable

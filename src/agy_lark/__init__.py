@@ -72,7 +72,7 @@ from .daemon import (
     main,
 )
 
-__version__ = "0.1.0a1"
+__version__ = "0.1.0"
 
 __all__ = [
     "ACP_EFFORT_CONFIG_ID",

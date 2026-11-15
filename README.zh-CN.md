@@ -12,10 +12,10 @@
 
 **在飞书里直接驱动本地 Antigravity，轻量直连。**
 
-基于官方 `lark-oapi` Python SDK 与原生 `agy acp --stdio` 协议构建的开源桥接工具——专注流式交互卡片、运行中插话纠偏与及时停止。
+基于官方 `lark-oapi` Python SDK 与原生 `agy acp --stdio` 协议构建的开源桥接工具——专注 CardKit 2.0 流式交互卡片、运行中插话纠偏、协议级及时停止，以及 `/model`、`/effort` 单列交互切换。
 
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--alpha-blue)](https://github.com/starswei/agy-lark/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
 
 [English](README.md) | [中文](README.zh-CN.md)
 
@@ -24,7 +24,7 @@
 ---
 
 > [!NOTE]
-> **当前状态（`0.1.0-alpha`）**：`agy-lark` 处于起步脚手架阶段。目前仓库已就绪 MIT 协议、配置模板（`.env.example`）、项目元数据（`pyproject.toml`）与双语说明文档；核心的 `agy acp --stdio` 协议内核与 `lark-oapi` 守护进程将在接下来的里程碑中逐步落地（见下方 [开发路线图](#开发路线图)）。
+> **当前状态**（`v0.1.0`）：已完成基于 `lark-oapi` 单进程 WebSocket 守护服务、CardKit 2.0 实时流式交互卡片与本地 `agy acp --stdio` 协议内核的端到端闭环，并已完成全量单元测试与飞书客户端实测验证，支持默认拒绝鉴权、运行中插话、`/stop` 与停止按钮及时取消，以及 `/model`、`/effort` 单列交互切换。
 
 ## 你能得到什么
 
@@ -33,8 +33,9 @@
 | **飞书远程驱动** | 将私聊、话题串或群内 `@机器人` 消息映射到本地 `agy` 会话 | 出门在外也能用手机飞书直接让本地代码助手干活 |
 | **运行中插话纠偏** | 任务仍在执行时发送新消息，直接通过 ACP 的 `session/prompt` 注入引导 | 发现跑偏或临时补充条件时不必干等或重开，当场把方向拉回正轨 |
 | **及时取消当前任务** | 点击卡片停止按钮或发 `/stop` 时，下发 ACP `session/cancel` 通知本轮停止 | 有序停下当前任务，同时完整保留已有会话上下文，可随时继续追问 |
-| **实时流式交互卡片** | 通过官方 `lark-oapi` 持续更新飞书 CardKit 2.0 交互卡片 | 思考过程、执行进度与最终回答实时呈现在一张卡片内，结构清晰 |
-| **极简开源运行环境** | 单 Python 进程直连飞书长连接（WebSocket），并自动探测本机 `agy` | 仅需 Python 环境与基础配置即可启动 |
+| **实时流式交互卡片** | 通过官方 `lark-oapi` 持续节流更新飞书 CardKit 2.0 交互卡片 | 执行进度与最终 Markdown 回答实时呈现在一张卡片内，结构清晰 |
+| **模型与思考强度控制** | 支持 `AGY_MODEL` / `AGY_EFFORT` 环境变量预设，并提供解耦的 `/model` 与 `/effort` 单列交互卡片 | 随时按会话切换模型或多档思考强度，互不覆写且在 ACP 重启后自动恢复 |
+| **极简开源运行环境** | 单 Python 进程直连飞书长连接（WebSocket），并自动探测本机 `agy` | 仅需 Python 3.10+、`lark-oapi` 与基础配置即可启动 |
 
 ## 架构设计
 
@@ -48,13 +49,13 @@
   </picture>
 </p>
 
-- **单进程飞书接入（`lark-oapi`）** ：通过同一条 WebSocket 长连接统一接收消息事件（`im.message.receive_v1`）与卡片交互回调（`card.action.trigger`），并在进程内直接完成卡片流式更新。
-- **直连原生 ACP（`agy acp --stdio`）** ：通过标准输入输出双向协议流驱动本地会话，天然支持**运行中插话（Steering）**与协议级的**及时取消（`session/cancel`）** 。
+- **单进程飞书接入**（`lark-oapi`）：通过同一条 WebSocket 长连接统一接收消息事件（`im.message.receive_v1`）与卡片交互回调（`card.action.trigger`），并在进程内通过 HTTPS 直接完成 CardKit 2.0 卡片创建与节流刷新。
+- **直连原生 ACP**（`agy acp --stdio`）：通过标准输入输出双向 JSON-RPC 协议流驱动本地会话，天然支持**运行中插话**（Steering）、协议级**及时取消**（`session/cancel`）以及彼此解耦的模型与思考强度配置。
 
 <!--
 ## 界面预览
 
-待后续跑通真实飞书卡片链路并补充截图到 `docs/assets/` 后取消注释启用：
+待后续补充实时截图到 `docs/assets/` 后取消注释启用：
 
 <table>
 <tr>
@@ -66,20 +67,17 @@
 
 ## 快速开始
 
-> [!IMPORTANT]
-> 运行时包（`src/agy_lark/`）将在后续里程碑提交。以下步骤用于说明公开版建成后的标准部署流程。
-
 ### 前置条件
 
 1. **Python 3.10+**（当前基于 `3.13.9` 开发验证）
-2. **本地可用的 Antigravity 命令行工具（`agy`）**：已完成登录并加入系统 `PATH`（或通过 `AGY_EXE` 显式指定路径）
+2. **本地可用的 Antigravity 命令行工具**（`agy`）：已完成登录并加入系统 `PATH`（或通过 `AGY_EXE` 显式指定路径）
 3. **一个飞书 / Lark 企业自建应用**：
    - 已开启机器人能力
-   - 事件与回调订阅方式选择**使用长连接（WebSocket）接收事件**
+   - 事件与回调订阅方式选择**使用长连接接收事件**（WebSocket）
    - 订阅消息接收事件 `im.message.receive_v1` 与卡片交互回调 `card.action.trigger`
    - 开通消息与交互卡片所需权限并发布版本
 
-### 本地初始化与配置
+### 本地安装与配置
 
 ```bash
 git clone https://github.com/starswei/agy-lark.git
@@ -89,35 +87,64 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 # macOS / Linux:      source .venv/bin/activate
 
+pip install -e .
 cp .env.example .env
 # 在 .env 中填入 FEISHU_APP_ID、FEISHU_APP_SECRET 与 AGY_LARK_ALLOWED_OPEN_IDS
 ```
 
+- **可选预设参数**：可在 `.env` 中设置 `AGY_MODEL` 与 `AGY_EFFORT`，在新建 ACP 会话时自动下发默认模型与思考强度；留空则沿用 Antigravity 默认设置。
+- **便携路径解析**：写入 `.env` 文件内的相对路径（`AGY_DEFAULT_WORKSPACE`、`AGY_EXE`、`AGY_LARK_DATA_DIR`）统一相对于 `.env` 所在目录解析；从外部系统环境变量传入的路径则仍保持相对于当前工作目录（`CWD`）的语义。
+
 > [!TIP]
-> **`AGY_LARK_ALLOWED_OPEN_IDS`是使用者权限白名单** ：填的是允许通过飞书操控你本地 `agy` 的个人账号 `open_id`（`ou_` 开头，多个用英文逗号隔开）。因为本桥接能驱动本地代码助手读写工程与执行命令，留空时将默认拒绝所有访问以确保安全。
+> **`AGY_LARK_ALLOWED_OPEN_IDS` 是使用者权限白名单** ：填的是允许通过飞书操控你本地 `agy` 的个人账号 `open_id`（`ou_` 开头，多个用英文逗号隔开）。因为本桥接能驱动本地代码助手读写工程与执行命令，留空时将默认拒绝所有访问以确保安全。
+
+### 启动守护服务
+
+```bash
+agy-lark --env-file .env -v
+```
+
+- `--env-file`：指定环境变量配置文件路径（默认读取当前工作目录下的 `.env`；传空字符串 `""` 可跳过 `.env` 读取，仅使用进程环境变量）。
+- `--verbose` / `-v`：开启 `DEBUG` 级别详细日志输出（优先级高于 `AGY_LARK_LOG_LEVEL`）。
+
+### 对话斜杠命令
+
+在已授权的私聊、群聊话题串或开启 `@机器人` 的群聊中发送独立命令即可生效（大小写不敏感，带附加参数的消息将作为普通对话提示词透传给后端）：
+
+- **`/stop`**：向当前会话正在运行的回合发送 ACP `session/cancel` 取消请求（与点击卡片上的停止按钮等效）。
+- **`/model`**：返回单列全宽（`fill`）CardKit 2.0 模型选择卡片，仅切换当前会话的模型，不覆盖思考强度设置。
+- **`/effort`**：返回单列全宽 CardKit 2.0 思考强度选择卡片，支持当前模型的多档思考强度（如 4 档），仅调整思考强度而不影响当前模型选择。
+
+### 运行单元测试
+
+在仓库根目录直接运行离线单元测试与守护集成测试：
+
+```bash
+python -W error -m unittest discover -s tests -v
+```
 
 ## 运行时与安全设计
 
-- **默认拒绝权限策略（Fail-Closed）** ：若 `AGY_LARK_ALLOWED_OPEN_IDS` 留空，守护进程默认**拦截所有传入消息与卡片动作**，防止把本机代码权限意外暴露给外部用户；群聊 `@机器人` 亦默认关闭，需显式开启。
-- **跨平台程序发现** ：优先读取环境变量 `AGY_EXE`，未配置时通过系统 `PATH` 自动定位，不写死任何个人盘符路径。
-- **有序取消与资源回收** ：通过 ACP `session/cancel` 结束当前运行回合，并在退出时平稳关闭标准输入输出管道，保持上下文与进程状态整洁。
-- **单进程事件总线** ：将事件接收、会话路由与卡片刷新集中在一个守护进程内统一协调。
+- **默认拒绝权限策略**（Fail-Closed）：若 `AGY_LARK_ALLOWED_OPEN_IDS` 留空，守护进程默认**拦截所有传入消息与卡片动作**（含停止、切模型、切思考强度），防止把本机代码权限意外暴露给外部用户；群聊 `@机器人` 亦默认关闭，需设置 `AGY_LARK_ALLOW_GROUP_MENTION=true` 才开启。
+- **跨平台程序发现**：优先读取环境变量 `AGY_EXE`，未配置时通过系统 `PATH` 自动定位，不写死任何个人盘符路径。
+- **节流更新与优雅退场**：通过 `AGY_LARK_STREAM_THROTTLE`（默认 `0.25s`）合并高频流式输出，支持单回合安全超时（`AGY_TURN_TIMEOUT_SECONDS`），并在收到 `SIGINT` / `SIGTERM` 时执行清理与有序退出。
+- **按会话独立恢复状态**：围绕私聊与话题根消息维护独立会话映射；当本地 ACP 子进程重启重建会话时，自动重新下发该会话已选定的模型与思考强度。
 
 ## 隐私边界
 
 `agy-lark` 严格隔离**开源仓库资产**与**本地私人运行数据**：
 
-- **提交到 Git 仓库**：源码、`.env.example`、`pyproject.toml`、`LICENSE`、文档与 Logo 资源。
-- **仅保留在本地（已写入 `.gitignore`）** ：`.env`、`FEISHU_APP_SECRET`、授权用户的 `open_id` 列表、`.agy-lark/`、`state.json`、`sessions.json`、`logs/`、本地数据库以及 `.venv/`。
+- **提交到 Git 仓库**：源码（`src/agy_lark/`）、单元测试（`tests/`）、`.env.example`、`pyproject.toml`、`LICENSE`、文档与 Logo 资源。
+- **仅保留在本地**（已写入 `.gitignore`）：`.env`、`FEISHU_APP_SECRET`、授权用户的 `open_id` 列表、`.agy-lark/`、日志、本地状态／数据库文件以及 `.venv/`。
 
 **严禁将 `.env` 或运行时状态文件提交到公开仓库**。
 
 ## 开发路线图
 
-- [x] **阶段 1**：初始化仓库、`Python 3.13.9` 独立 `.venv` 与安全 `.gitignore`
-- [x] **阶段 2（当前）** ：MIT 开源协议、`.env.example` 规范、`pyproject.toml`、双语 README 与项目 Logo
-- [ ] **阶段 3**：最小纯本地 `agy acp --stdio` 协议内核（实测验证**运行中插话**与 **`session/cancel` 及时停止**）
-- [ ] **阶段 4**：`lark-oapi` 单进程 WebSocket 守护服务与 CardKit 2.0 流式交互卡片
+- [x] **阶段 1**：初始化仓库、独立 `.venv` 虚拟环境与安全 `.gitignore`
+- [x] **阶段 2**：MIT 开源协议、`.env.example` 规范、`pyproject.toml`、双语 README 与项目 Logo 资源
+- [x] **`v0.1.0-beta`**（`#1`、`#2`）：`.env` 配置加载、Fail-Closed `open_id` 鉴权、跨平台 `agy` 自动发现，以及原生 `agy acp --stdio` 协议内核（支持运行中插话与 `session/cancel` 及时停止）
+- [x] **`v0.1.0`**（`#3`、`#4`、`#5`）：CardKit 2.0 节流流式卡片、`lark-oapi` 单进程 WebSocket 守护服务、`agy-lark` CLI 入口、`AGY_MODEL` / `AGY_EFFORT` 环境预设，以及 `/model`、`/effort` 单列交互选择卡片
 
 ## License
 
