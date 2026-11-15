@@ -14,6 +14,7 @@
 
 基于官方 `lark-oapi` Python SDK 与原生 `agy acp --stdio` 协议构建的开源桥接工具——专注 CardKit 2.0 流式交互卡片、运行中插话纠偏、协议级及时停止，以及 `/model`、`/effort` 单列交互切换。
 
+[![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
 

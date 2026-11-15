@@ -15,6 +15,7 @@
 A lightweight, native-ACP Feishu / Lark bridge powered by the official Python `lark-oapi` SDK —
 delivering live streaming cards, mid-turn steering, timely cancellation via `session/cancel`, and interactive `/model` & `/effort` selection.
 
+[![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
 

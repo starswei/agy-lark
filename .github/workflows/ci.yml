@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install package in editable mode
+        run: python -m pip install -e .
+
+      - name: Verify CLI entrypoint
+        run: agy-lark --help
+
+      - name: Verify package import and version
+        run: python -c "import agy_lark; print(agy_lark.__version__)"
+
+      - name: Run offline tests with unittest
+        run: python -W error -m unittest discover -s tests -v
