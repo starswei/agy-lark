@@ -1663,6 +1663,7 @@ class TestPackagingAndCli(unittest.TestCase):
     def test_pyproject_scripts_and_package_exports(self) -> None:
         pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
         data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("project", {}).get("version"), agy_lark.__version__)
         scripts = data.get("project", {}).get("scripts", {})
         self.assertEqual(scripts.get("agy-lark"), "agy_lark.daemon:main")
 
