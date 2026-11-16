@@ -50,6 +50,7 @@ from .card_streamer import (
     parse_stop_callback_value,
 )
 from .config import AgyLarkConfig, load_config
+from .init_wizard import run_init_wizard
 from .session_store import (
     DEFAULT_MAPPING_CAPACITY,
     DEFAULT_SESSIONS_FILENAME,
@@ -2452,7 +2453,7 @@ def _configure_logging(level_name: str) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """构建 agy-lark 守护服务 CLI 参数解析器。"""
+    """构建 agy-lark 守护服务与 init 向导 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="agylark",
         description="启动飞书 ↔ Antigravity (agy acp --stdio) 单进程桥接守护服务。",
@@ -2463,10 +2464,53 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="指定环境变量配置文件路径（默认读取当前目录下的 .env；传空字符串跳过读取）。",
     )
     parser.add_argument(
+        "--env-override",
+        action="store_true",
+        help="允许 --env-file 中的配置覆盖当前终端已设置的同名环境变量。",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         help="启用 DEBUG 级别详细日志输出。",
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+    init_parser = subparsers.add_parser(
+        "init",
+        help="运行初始化向导，创建独立运行目录（.env、workspace/、.agy-lark/）并自检环境。",
+        description="初始化 agylark 独立运行目录（.env、workspace/、.agy-lark/）并检查依赖环境。",
+    )
+    init_parser.add_argument(
+        "--dir",
+        default=None,
+        help="指定初始化运行目录路径（默认使用当前目录 .）。",
+    )
+    init_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="非交互模式：跳过终端提问，直接生成规范 .env 模板与运行目录骨架。",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="允许覆盖目标目录中已存在的 .env 配置文件。",
+    )
+    verify_group = init_parser.add_mutually_exclusive_group()
+    verify_group.add_argument(
+        "--verify",
+        dest="verify",
+        action="store_const",
+        const=True,
+        default=None,
+        help="生成配置后执行飞书凭据与本地 agy acp 握手自检。",
+    )
+    verify_group.add_argument(
+        "--skip-verify",
+        dest="verify",
+        action="store_const",
+        const=False,
+        help="跳过飞书凭据与本地 agy acp 握手自检。",
     )
     return parser
 
@@ -2477,9 +2521,18 @@ def main(
     daemon_factory: Callable[[AgyLarkConfig], AgyLarkDaemon] = AgyLarkDaemon,
     environ: dict[str, str] | None = None,
 ) -> int:
-    """agy-lark 命令行入口：加载配置、启动 WebSocket 守护服务并在退出时干净清理。"""
+    """agy-lark 命令行入口：支持 `agylark init` 初始化向导与默认 WebSocket 守护服务启动。"""
     parser = build_arg_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if getattr(args, "command", None) == "init":
+        return run_init_wizard(
+            target_dir=args.dir,
+            non_interactive=bool(args.non_interactive),
+            force=bool(args.force),
+            verify=args.verify,
+            environ=environ,
+        )
 
     dotenv_path: str | None = args.env_file.strip() if isinstance(args.env_file, str) else ".env"
     if not dotenv_path:
@@ -2490,6 +2543,7 @@ def main(
             dotenv_path=dotenv_path,
             environ=environ,
             resolve_exe=True,
+            env_override=bool(args.env_override),
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"配置加载失败：{exc}", file=sys.stderr)

@@ -31,6 +31,7 @@ from agylark import (
     DEFAULT_SESSIONS_FILENAME,
     EFFORT_STATUS_ELEMENT_ID,
     HELP_BODY_ELEMENT_ID,
+    KNOWN_CONFIG_ENV_KEYS,
     MODEL_STATUS_ELEMENT_ID,
     SESSION_STORE_SCHEMA_VERSION,
     STATUS_BODY_ELEMENT_ID,
@@ -50,6 +51,7 @@ from agylark import (
     PersistedConversation,
     PersistedSessionState,
     SessionStore,
+    build_arg_parser,
     build_effort_select_callback_value,
     build_event_dispatcher,
     build_feishu_client,
@@ -57,9 +59,13 @@ from agylark import (
     build_stop_callback_value,
     build_ws_client,
     extract_incoming_message,
+    load_config,
     main,
     parse_effort_select_callback_value,
     parse_model_select_callback_value,
+    run_init_wizard,
+    verify_acp_handshake,
+    verify_feishu_credentials,
 )
 from agylark.daemon import _import_lark_oapi
 
@@ -1872,6 +1878,7 @@ class TestPackagingAndCli(unittest.TestCase):
             "DEFAULT_MAPPING_CAPACITY",
             "DEFAULT_SESSIONS_FILENAME",
             "JsonSessionStore",
+            "KNOWN_CONFIG_ENV_KEYS",
             "LarkApiError",
             "LarkCardTransport",
             "LarkMessageSender",
@@ -1880,11 +1887,13 @@ class TestPackagingAndCli(unittest.TestCase):
             "PersistedSessionState",
             "SESSION_STORE_SCHEMA_VERSION",
             "SessionStore",
+            "build_arg_parser",
             "build_event_dispatcher",
             "build_feishu_client",
             "build_ws_client",
             "extract_incoming_message",
             "main",
+            "run_init_wizard",
         ):
             self.assertTrue(hasattr(agylark, symbol), f"缺少导出符号: {symbol}")
 
@@ -4076,6 +4085,311 @@ class TestStatusAndHelpCommands(unittest.TestCase):
             self.assertIn("- /help：", sender.text_messages[1]["text"])
         finally:
             daemon.close()
+
+
+class TestInitWizardAndEnvOverride(unittest.TestCase):
+    """Issue #12 `agylark init` 初始化向导与 `--env-override` 覆盖能力测试。"""
+
+    def test_cli_arg_parser_and_env_override_compatibility(self) -> None:
+        parser = build_arg_parser()
+        default_args = parser.parse_args([])
+        self.assertIsNone(default_args.command)
+        self.assertEqual(default_args.env_file, ".env")
+        self.assertFalse(default_args.env_override)
+        self.assertFalse(default_args.verbose)
+
+        init_args = parser.parse_args(
+            ["init", "--dir", "./bot_home", "--non-interactive", "--force", "--verify"]
+        )
+        self.assertEqual(init_args.command, "init")
+        self.assertEqual(init_args.dir, "./bot_home")
+        self.assertTrue(init_args.non_interactive)
+        self.assertTrue(init_args.force)
+        self.assertTrue(init_args.verify)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            runtime_dir = tmp_path / "bot_runtime"
+            ws_dir = runtime_dir / "workspace"
+            bin_dir = runtime_dir / "bin"
+            ws_dir.mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+            exe_name = "agy.exe" if os.name == "nt" else "agy"
+            local_exe = bin_dir / exe_name
+            local_exe.write_text("mock agy", encoding="utf-8")
+            if os.name != "nt":
+                local_exe.chmod(0o755)
+
+            env_file = runtime_dir / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "FEISHU_APP_ID=cli_from_env_file",
+                        "FEISHU_APP_SECRET=sec_from_env_file",
+                        "AGY_LARK_ALLOWED_OPEN_IDS=ou_dotenv_user",
+                        f"AGY_EXE=./bin/{exe_name}",
+                        "AGY_DEFAULT_WORKSPACE=./workspace",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            class _RecordDaemon:
+                seen_configs: list[AgyLarkConfig] = []
+
+                def __init__(self, cfg: AgyLarkConfig) -> None:
+                    self.seen_configs.append(cfg)
+
+                def run_forever(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    return None
+
+            # 默认关闭 --env-override：外部环境变量优先
+            shell_ws = tmp_path / "shell_ws"
+            shell_ws.mkdir()
+            shell_env = {
+                "PATH": "",
+                "FEISHU_APP_ID": "cli_from_shell",
+                "FEISHU_APP_SECRET": "sec_from_shell",
+                "AGY_LARK_ALLOWED_OPEN_IDS": "ou_shell_user",
+                "AGY_EXE": str(local_exe),
+                "AGY_DEFAULT_WORKSPACE": str(shell_ws),
+            }
+            with mock.patch("agylark.daemon._configure_logging"):
+                rc_default = main(
+                    ["--env-file", str(env_file)],
+                    daemon_factory=_RecordDaemon,  # type: ignore[arg-type]
+                    environ=dict(shell_env),
+                )
+            self.assertEqual(rc_default, 0)
+            self.assertEqual(_RecordDaemon.seen_configs[-1].feishu_app_id, "cli_from_shell")
+            self.assertEqual(_RecordDaemon.seen_configs[-1].default_workspace, shell_ws)
+
+            # 开启 --env-override：.env 优先且 ./workspace 相对 .env 所在目录解析
+            with mock.patch("agylark.daemon._configure_logging"):
+                rc_override = main(
+                    ["--env-file", str(env_file), "--env-override"],
+                    daemon_factory=_RecordDaemon,  # type: ignore[arg-type]
+                    environ=dict(shell_env),
+                )
+            self.assertEqual(rc_override, 0)
+            self.assertEqual(_RecordDaemon.seen_configs[-1].feishu_app_id, "cli_from_env_file")
+            self.assertEqual(_RecordDaemon.seen_configs[-1].default_workspace, ws_dir.resolve())
+
+    def test_init_non_interactive_skeleton_overwrite_protection_and_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_dir = Path(tmp_dir) / "isolated_bot"
+            out_buf = StringIO()
+            err_buf = StringIO()
+            with mock.patch("sys.stdout", out_buf), mock.patch("sys.stderr", err_buf):
+                rc_init = main(
+                    ["init", "--dir", str(target_dir), "--non-interactive"],
+                    environ={"PATH": ""},
+                )
+            self.assertEqual(rc_init, 0)
+            env_path = target_dir / ".env"
+            self.assertTrue(env_path.is_file())
+            self.assertTrue((target_dir / "workspace").is_dir())
+            self.assertTrue((target_dir / ".agy-lark").is_dir())
+            self.assertIn("暂未探测到 agy", out_buf.getvalue())
+            self.assertIn("im.message.receive_v1", out_buf.getvalue())
+            self.assertIn("card.action.trigger", out_buf.getvalue())
+            self.assertIn("agylark --env-file", out_buf.getvalue())
+
+            cfg = load_config(dotenv_path=env_path, environ={"PATH": ""}, resolve_exe=False)
+            self.assertEqual(cfg.feishu_app_id, "")
+            self.assertEqual(cfg.feishu_app_secret, "")
+            self.assertEqual(cfg.feishu_domain, "https://open.feishu.cn")
+            self.assertEqual(cfg.default_workspace, (target_dir / "workspace").resolve())
+            self.assertEqual(cfg.data_dir, (target_dir / ".agy-lark").resolve())
+
+            # 默认保护已有 .env 不被误覆盖
+            sentinel = "FEISHU_APP_ID=keep_existing_id\n"
+            env_path.write_text(sentinel, encoding="utf-8")
+            err_protect = StringIO()
+            with mock.patch("sys.stderr", err_protect):
+                rc_protect = main(
+                    ["init", "--dir", str(target_dir), "--non-interactive"],
+                    environ={"PATH": ""},
+                )
+            self.assertEqual(rc_protect, 1)
+            self.assertIn("--force", err_protect.getvalue())
+            self.assertEqual(env_path.read_text(encoding="utf-8"), sentinel)
+
+            # 传入 --force 后正常重建 .env
+            with mock.patch("sys.stdout", StringIO()), mock.patch("sys.stderr", StringIO()):
+                rc_force = main(
+                    ["init", "--dir", str(target_dir), "--non-interactive", "--force"],
+                    environ={"PATH": ""},
+                )
+            self.assertEqual(rc_force, 0)
+            self.assertIn("FEISHU_APP_ID=", env_path.read_text(encoding="utf-8"))
+            self.assertNotIn("keep_existing_id", env_path.read_text(encoding="utf-8"))
+
+    def test_init_interactive_hidden_secret_residual_env_and_optional_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            bin_dir = tmp_path / "path_bin"
+            bin_dir.mkdir()
+            exe_name = "agy.exe" if os.name == "nt" else "agy"
+            fake_agy = bin_dir / exe_name
+            fake_agy.write_text("mock agy", encoding="utf-8")
+            if os.name != "nt":
+                fake_agy.chmod(0o755)
+
+            target_dir = tmp_path / "interactive_bot"
+            answers = iter(
+                [
+                    str(target_dir),  # 运行目录
+                    "2",  # Lark 国际版
+                    "cli_interactive_99",  # FEISHU_APP_ID
+                    "ou_alice, ou_bob",  # ALLOWED_OPEN_IDS
+                    "y",  # ALLOW_GROUP_MENTION
+                    "./my_ws",  # AGY_DEFAULT_WORKSPACE
+                    "./my_data",  # AGY_LARK_DATA_DIR
+                    "",  # AGY_EXE（沿用 PATH）
+                    "gemini-3.8-flash",  # AGY_MODEL
+                    "HIGH",  # AGY_EFFORT
+                    "y",  # 执行可选自检
+                ]
+            )
+            secret_prompts: list[str] = []
+
+            def _fake_input(_prompt: str) -> str:
+                return next(answers)
+
+            def _fake_secret(prompt: str) -> str:
+                secret_prompts.append(prompt)
+                return "sec_hidden_987654"
+
+            feishu_calls: list[tuple[str, str, str]] = []
+            acp_calls: list[tuple[str | None, Path]] = []
+
+            def _fake_verify_feishu(app_id: str, app_secret: str, domain: str) -> tuple[bool, str]:
+                feishu_calls.append((app_id, app_secret, domain))
+                return True, "飞书凭据校验通过（mock）"
+
+            def _fake_verify_acp(agy_exe: str | None, workspace: Path) -> tuple[bool, str]:
+                acp_calls.append((agy_exe, workspace))
+                return True, "本地 agy acp 握手通过（mock）"
+
+            out_buf = StringIO()
+            err_buf = StringIO()
+            residual_env = {
+                "PATH": str(bin_dir),
+                "FEISHU_APP_ID": "cli_stale_shell",
+                "AGY_DEFAULT_WORKSPACE": "/stale/shell/ws",
+            }
+            rc = run_init_wizard(
+                target_dir=None,
+                non_interactive=False,
+                force=False,
+                environ=residual_env,
+                input_fn=_fake_input,
+                secret_fn=_fake_secret,
+                out=out_buf,
+                err=err_buf,
+                verify_feishu_fn=_fake_verify_feishu,
+                verify_acp_fn=_fake_verify_acp,
+            )
+            self.assertEqual(rc, 0)
+            stdout_text = out_buf.getvalue()
+            self.assertEqual(len(secret_prompts), 1)
+            # 隐藏回显秘密绝不能出现在终端输出中
+            self.assertNotIn("sec_hidden_987654", stdout_text)
+            self.assertIn("已探测到 agy 可执行文件", stdout_text)
+            self.assertIn("FEISHU_APP_ID, AGY_DEFAULT_WORKSPACE", stdout_text)
+            self.assertIn("--env-override", stdout_text)
+            self.assertIn("飞书凭据校验通过（mock）", stdout_text)
+            self.assertIn("本地 agy acp 握手通过（mock）", stdout_text)
+            self.assertEqual(
+                feishu_calls,
+                [("cli_interactive_99", "sec_hidden_987654", "https://open.larksuite.com")],
+            )
+            self.assertEqual(len(acp_calls), 1)
+            self.assertEqual(acp_calls[0][0], str(fake_agy.resolve()))
+            self.assertEqual(acp_calls[0][1], (target_dir / "my_ws").resolve())
+
+            env_path = target_dir / ".env"
+            self.assertTrue((target_dir / "my_ws").is_dir())
+            self.assertTrue((target_dir / "my_data").is_dir())
+            cfg = load_config(
+                dotenv_path=env_path,
+                environ=dict(residual_env),
+                resolve_exe=True,
+                env_override=True,
+            )
+            self.assertEqual(cfg.feishu_app_id, "cli_interactive_99")
+            self.assertEqual(cfg.feishu_app_secret, "sec_hidden_987654")
+            self.assertEqual(cfg.feishu_domain, "https://open.larksuite.com")
+            self.assertEqual(cfg.allowed_open_ids, frozenset({"ou_alice", "ou_bob"}))
+            self.assertTrue(cfg.allow_group_mention)
+            self.assertEqual(cfg.agy_model, "gemini-3.8-flash")
+            self.assertEqual(cfg.agy_effort, "high")
+            self.assertEqual(cfg.default_workspace, (target_dir / "my_ws").resolve())
+            self.assertEqual(cfg.data_dir, (target_dir / "my_data").resolve())
+
+    def test_init_self_check_helpers_feishu_and_acp_handshake(self) -> None:
+        class _MockAuthResp:
+            def __init__(self, ok: bool, code: int = 0, msg: str = "ok") -> None:
+                self._ok = ok
+                self.code = code
+                self.msg = msg
+
+            def success(self) -> bool:
+                return self._ok
+
+            def get_log_id(self) -> str:
+                return "log_auth_test"
+
+        fake_client_ok = SimpleNamespace(
+            auth=SimpleNamespace(
+                v3=SimpleNamespace(
+                    tenant_access_token=SimpleNamespace(
+                        internal=lambda _req: _MockAuthResp(True)
+                    )
+                )
+            )
+        )
+        fake_client_fail = SimpleNamespace(
+            auth=SimpleNamespace(
+                v3=SimpleNamespace(
+                    tenant_access_token=SimpleNamespace(
+                        internal=lambda _req: _MockAuthResp(False, code=99991663, msg="invalid app_secret")
+                    )
+                )
+            )
+        )
+        with mock.patch("agylark.daemon.build_feishu_client", return_value=fake_client_ok):
+            ok, msg_ok = verify_feishu_credentials("cli_ok", "sec_ok")
+        self.assertTrue(ok)
+        self.assertIn("校验通过", msg_ok)
+
+        with mock.patch("agylark.daemon.build_feishu_client", return_value=fake_client_fail):
+            fail_ok, msg_fail = verify_feishu_credentials("cli_bad", "sec_bad")
+        self.assertFalse(fail_ok)
+        self.assertIn("invalid app_secret", msg_fail)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            with mock.patch(
+                "agylark.init_wizard.AgyAcpClient",
+                return_value=AgyAcpClient(
+                    executable=sys.executable,
+                    args=["-u", "-c", _MOCK_DAEMON_ACP_SCRIPT],
+                    cwd=ws,
+                    default_timeout=5.0,
+                ),
+            ):
+                acp_ok, acp_msg = verify_acp_handshake(sys.executable, ws, timeout=5.0)
+            self.assertTrue(acp_ok)
+            self.assertIn("Mock ACP Daemon Server", acp_msg)
+
+            missing_ok, missing_msg = verify_acp_handshake(str(ws / "nonexistent_agy"), ws, timeout=1.0)
+            self.assertFalse(missing_ok)
+            self.assertIn("握手失败", missing_msg)
 
 
 def tearDownModule() -> None:

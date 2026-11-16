@@ -9,6 +9,8 @@ import unittest
 
 from agylark import (
     AgyLarkConfig,
+    InitValues,
+    format_env_file_content,
     is_authorized_open_id,
     load_config,
     load_dotenv_file,
@@ -286,6 +288,101 @@ class TestLoadConfig(unittest.TestCase):
             cfg_default = load_config(dotenv_path=env_empty, environ={}, resolve_exe=False)
             self.assertEqual(cfg_default.agy_model, "")
             self.assertEqual(cfg_default.agy_effort, "")
+
+    def test_env_override_respects_dotenv_precedence_and_relative_base_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "override_runtime"
+            bin_dir = runtime_dir / "bin"
+            ws_dir = runtime_dir / "workspace"
+            bin_dir.mkdir(parents=True)
+            ws_dir.mkdir(parents=True)
+            exe = _create_mock_agy(bin_dir)
+
+            env_file = runtime_dir / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "FEISHU_APP_ID=from_dotenv",
+                        f"AGY_EXE=./bin/{exe.name}",
+                        "AGY_DEFAULT_WORKSPACE=./workspace",
+                        "AGY_LARK_DATA_DIR=./.custom-data",
+                        "AGY_MODEL=gemini-4-argon",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            shell_env = {
+                "PATH": "",
+                "FEISHU_APP_ID": "from_shell",
+                "AGY_EXE": "./shell_agy",
+                "AGY_DEFAULT_WORKSPACE": "./from_shell_cwd",
+                "AGY_LARK_DATA_DIR": "./shell_data",
+                "AGY_MODEL": "claude-opus",
+                "AGY_EFFORT": "xhigh",
+                "AGY_TURN_TIMEOUT_SECONDS": "45",
+            }
+
+            cfg_default = load_config(
+                dotenv_path=env_file,
+                environ=dict(shell_env),
+                resolve_exe=False,
+                env_override=False,
+            )
+            self.assertEqual(cfg_default.feishu_app_id, "from_shell")
+            self.assertEqual(cfg_default.default_workspace, Path("./from_shell_cwd"))
+            self.assertEqual(cfg_default.data_dir, Path("./shell_data"))
+            self.assertEqual(cfg_default.agy_model, "claude-opus")
+
+            cfg_override = load_config(
+                dotenv_path=env_file,
+                environ=dict(shell_env),
+                resolve_exe=True,
+                env_override=True,
+            )
+            self.assertEqual(cfg_override.feishu_app_id, "from_dotenv")
+            self.assertEqual(Path(cfg_override.agy_exe), exe.resolve())
+            self.assertEqual(cfg_override.default_workspace, ws_dir.resolve())
+            self.assertEqual(cfg_override.data_dir, (runtime_dir / ".custom-data").resolve())
+            self.assertEqual(cfg_override.agy_model, "gemini-4-argon")
+            # 未写入 .env 的宿主机变量仍保留
+            self.assertEqual(cfg_override.agy_effort, "xhigh")
+            self.assertEqual(cfg_override.turn_timeout_seconds, 45)
+
+            # .env 显式留空时，在 env_override=True 下清除宿主机预设并回落 Path.cwd()
+            empty_ws_env = runtime_dir / ".clear_ws.env"
+            empty_ws_env.write_text("AGY_DEFAULT_WORKSPACE=\n", encoding="utf-8")
+            cfg_cleared = load_config(
+                dotenv_path=empty_ws_env,
+                environ={"AGY_DEFAULT_WORKSPACE": "./from_shell_cwd", "PATH": ""},
+                resolve_exe=False,
+                env_override=True,
+            )
+            self.assertEqual(cfg_cleared.default_workspace, Path.cwd())
+
+    def test_format_env_file_content_roundtrips_special_characters_and_spaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            special_exe = r"C:\Program Files\Antigravity Tools\agy #1.cmd"
+            content = format_env_file_content(
+                InitValues(
+                    feishu_app_id="cli_special_1",
+                    feishu_app_secret='sec "quote" #hash\\slash',
+                    allowed_open_ids="ou_b, ou_a, ou_b",
+                    allow_group_mention=True,
+                    agy_exe=special_exe,
+                    default_workspace="./my workspace",
+                )
+            )
+            env_file.write_text(content, encoding="utf-8")
+            parsed: dict[str, str] = {}
+            load_dotenv_file(env_file, environ=parsed, override=True)
+            self.assertEqual(parsed["FEISHU_APP_ID"], "cli_special_1")
+            self.assertEqual(parsed["FEISHU_APP_SECRET"], 'sec "quote" #hash\\slash')
+            self.assertEqual(parsed["AGY_LARK_ALLOWED_OPEN_IDS"], "ou_a,ou_b")
+            self.assertEqual(parsed["AGY_LARK_ALLOW_GROUP_MENTION"], "true")
+            self.assertEqual(parsed["AGY_EXE"], special_exe)
+            self.assertEqual(parsed["AGY_DEFAULT_WORKSPACE"], "./my workspace")
 
 
 if __name__ == "__main__":

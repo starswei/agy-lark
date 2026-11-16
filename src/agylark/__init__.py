@@ -57,12 +57,22 @@ from .card_streamer import (
     parse_stop_callback_value,
 )
 from .config import (
+    KNOWN_CONFIG_ENV_KEYS,
     AgyLarkConfig,
     is_authorized_open_id,
     load_config,
     load_dotenv_file,
     parse_allowed_open_ids,
     resolve_agy_executable,
+)
+from .init_wizard import (
+    InitValues,
+    detect_agy_executable,
+    detect_residual_env_vars,
+    format_env_file_content,
+    run_init_wizard,
+    verify_acp_handshake,
+    verify_feishu_credentials,
 )
 from .daemon import (
     AcpClientProtocol,
@@ -119,7 +129,9 @@ __all__ = [
     "HELP_HINT_ELEMENT_ID",
     "IncomingMention",
     "IncomingMessage",
+    "InitValues",
     "JsonSessionStore",
+    "KNOWN_CONFIG_ENV_KEYS",
     "LarkApiError",
     "LarkCardTransport",
     "LarkMessageSender",
@@ -156,7 +168,10 @@ __all__ = [
     "build_update_card_payload",
     "build_update_settings_payload",
     "build_ws_client",
+    "detect_agy_executable",
+    "detect_residual_env_vars",
     "extract_incoming_message",
+    "format_env_file_content",
     "format_help_content",
     "format_status_content",
     "has_config_option",
@@ -173,4 +188,7 @@ __all__ = [
     "parse_model_select_callback_value",
     "parse_stop_callback_value",
     "resolve_agy_executable",
+    "run_init_wizard",
+    "verify_acp_handshake",
+    "verify_feishu_credentials",
 ]

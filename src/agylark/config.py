@@ -15,6 +15,22 @@ DEFAULT_STREAM_THROTTLE = 0.25
 DEFAULT_DATA_DIR = ".agy-lark"
 DEFAULT_LOG_LEVEL = "INFO"
 
+KNOWN_CONFIG_ENV_KEYS: tuple[str, ...] = (
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_DOMAIN",
+    "AGY_LARK_ALLOWED_OPEN_IDS",
+    "AGY_LARK_ALLOW_GROUP_MENTION",
+    "AGY_EXE",
+    "AGY_MODEL",
+    "AGY_EFFORT",
+    "AGY_DEFAULT_WORKSPACE",
+    "AGY_TURN_TIMEOUT_SECONDS",
+    "AGY_LARK_STREAM_THROTTLE",
+    "AGY_LARK_DATA_DIR",
+    "AGY_LARK_LOG_LEVEL",
+)
+
 
 def _parse_env_value(raw_value: str) -> str:
     """解析单条 .env 赋值语句右侧的字符串值，支持首尾引号与行内注释。"""
@@ -239,6 +255,7 @@ def load_config(
     dotenv_path: str | Path | None = ".env",
     environ: MutableMapping[str, str] | None = None,
     resolve_exe: bool = True,
+    env_override: bool = False,
 ) -> AgyLarkConfig:
     """加载 .env 与环境变量，返回校验后的 AgyLarkConfig 实例。"""
     env: MutableMapping[str, str] = os.environ if environ is None else environ
@@ -250,11 +267,17 @@ def load_config(
         dotenv_file = Path(dotenv_path)
         if dotenv_file.is_file():
             dotenv_base_dir = dotenv_file.resolve().parent
-            parsed_dotenv = load_dotenv_file(dotenv_file, environ=env, override=False)
+            parsed_dotenv = load_dotenv_file(
+                dotenv_file,
+                environ=env,
+                override=env_override,
+            )
 
     def _source_base_dir(key: str) -> Path | None:
-        """仅当生效配置来自 .env 文件（未被外部环境变量提前占坑）时返回 .env 所在目录。"""
-        if dotenv_base_dir is not None and key not in preexisting_keys and key in parsed_dotenv:
+        """当生效配置最终来自 .env（未被外部变量占坑，或开启 env_override）时返回 .env 所在目录。"""
+        if dotenv_base_dir is None or key not in parsed_dotenv:
+            return None
+        if env_override or key not in preexisting_keys:
             return dotenv_base_dir
         return None
 
