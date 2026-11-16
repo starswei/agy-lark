@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/Logo-dark.svg" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/Logo.svg" />
-  <img src="docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo.svg" />
+  <img src="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
 </picture>
 
 # agy-lark
@@ -16,10 +16,10 @@ A lightweight, native-ACP Feishu / Lark bridge powered by the official Python `l
 delivering live streaming cards, mid-turn steering, timely cancellation via `session/cancel`, and interactive `/model` & `/effort` selection.
 
 [![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/starswei/agy-lark/blob/main/LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](https://github.com/starswei/agy-lark/blob/main/README.md) | [中文](https://github.com/starswei/agy-lark/blob/main/README.zh-CN.md)
 
 </div>
 
@@ -45,9 +45,9 @@ delivering live streaming cards, mid-turn steering, timely cancellation via `ses
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.svg" />
-    <img src="docs/assets/architecture-light.svg" alt="agy-lark architecture: Feishu / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-light.svg" />
+    <img src="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-light.svg" alt="agy-lark architecture: Feishu / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
   </picture>
 </p>
 
@@ -79,6 +79,19 @@ Uncomment after adding real Feishu / Lark card captures under `docs/assets/`:
    - Required IM / CardKit bot permissions granted and app published
 
 ### Installation & Configuration
+
+**Option 1: Install from GitHub Releases or PyPI (after `agylark` is published to PyPI)**
+
+```bash
+# Isolated CLI installation (recommended by PyPA once published to PyPI):
+pipx install agylark
+# or with uv:
+uv tool install agylark
+# or directly from a downloaded GitHub Release wheel inside a venv:
+pip install ./agylark-<version>-py3-none-any.whl
+```
+
+**Option 2: Install from Source**
 
 ```bash
 git clone https://github.com/starswei/agy-lark.git
@@ -148,4 +161,4 @@ To also include the optional real `agy acp` cross-restart E2E test (requires a l
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/starswei/agy-lark/blob/main/LICENSE)

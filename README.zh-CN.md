@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/Logo-dark.svg" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/Logo.svg" />
-  <img src="docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo.svg" />
+  <img src="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/Logo.svg" alt="agy-lark Logo" width="180" />
 </picture>
 
 # agy-lark
@@ -15,10 +15,10 @@
 基于官方 `lark-oapi` Python SDK 与原生 `agy acp --stdio` 协议构建的开源桥接工具——专注 CardKit 2.0 流式交互卡片、运行中插话纠偏、协议级及时停止，以及 `/model`、`/effort` 单列交互切换。
 
 [![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/starswei/agy-lark/blob/main/LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](https://github.com/starswei/agy-lark/blob/main/README.md) | [中文](https://github.com/starswei/agy-lark/blob/main/README.zh-CN.md)
 
 </div>
 
@@ -44,9 +44,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.zh-CN.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.zh-CN.svg" />
-    <img src="docs/assets/architecture-light.zh-CN.svg" alt="agy-lark 架构图：飞书 / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-dark.zh-CN.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-light.zh-CN.svg" />
+    <img src="https://raw.githubusercontent.com/starswei/agy-lark/main/docs/assets/architecture-light.zh-CN.svg" alt="agy-lark 架构图：飞书 / Lark ↔ agy-lark ↔ Antigravity" width="100%" />
   </picture>
 </p>
 
@@ -79,6 +79,19 @@
    - 开通消息与交互卡片所需权限并发布版本
 
 ### 本地安装与配置
+
+**方式一：通过 PyPI 或 GitHub Release 安装（PyPI 首版上线后即可直接安装 `agylark`）**
+
+```bash
+# 推荐用于命令行工具的隔离安装方式（PyPI 上线后可用）：
+pipx install agylark
+# 或使用 uv：
+uv tool install agylark
+# 或在新建 venv 中安装从 GitHub Release 下载的 .whl 包：
+pip install ./agylark-<version>-py3-none-any.whl
+```
+
+**方式二：从源码安装**
 
 ```bash
 git clone https://github.com/starswei/agy-lark.git
@@ -146,4 +159,4 @@ python -W error -m unittest discover -s tests -v
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/starswei/agy-lark/blob/main/LICENSE)
