@@ -420,6 +420,29 @@ class AgyAcpClient:
             timeout=timeout,
         )
 
+    def resume_session(
+        self,
+        session_id: str,
+        cwd: str | Path | None = None,
+        mcp_servers: Sequence[dict[str, Any]] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """恢复已有 ACP 会话（`session/resume`），返回元数据而不回放历史消息流。"""
+        normalized_session_id = session_id.strip() if isinstance(session_id, str) else ""
+        if not normalized_session_id:
+            raise ValueError("session_id 不能为空")
+        target_cwd = self.cwd if cwd is None else Path(cwd)
+        return self.send_request(
+            "session/resume",
+            {
+                "sessionId": normalized_session_id,
+                "cwd": str(target_cwd),
+                "mcpServers": [dict(server) for server in (mcp_servers or ())],
+            },
+            timeout=timeout,
+        )
+
     def set_mode(
         self,
         session_id: str,

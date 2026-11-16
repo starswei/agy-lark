@@ -26,7 +26,7 @@ delivering live streaming cards, mid-turn steering, timely cancellation via `ses
 ---
 
 > [!NOTE]
-> **Project Status (`v0.1.0`)**: End-to-end Feishu / Lark ↔ local `agy acp --stdio` bridging is complete and verified across the offline unit/integration test suite and live Feishu sessions — featuring Fail-Closed `open_id` authorization, a single-process `lark-oapi` WebSocket daemon, CardKit 2.0 streaming cards, mid-turn steering, `/stop` cancellation, and single-column `/model` & `/effort` interactive selector cards.
+> **Project Status (`v0.1.0`)**: End-to-end Feishu / Lark ↔ local `agy acp --stdio` bridging is complete and verified across the offline unit/integration test suite and live Feishu sessions — featuring Fail-Closed `open_id` authorization, a single-process `lark-oapi` WebSocket daemon, persistent cross-restart ACP session recovery (`session/resume`), CardKit 2.0 streaming cards, mid-turn steering, `/stop` cancellation, and single-column `/model` & `/effort` interactive selector cards.
 
 ## What You Get
 
@@ -124,6 +124,8 @@ Run the offline unit and daemon integration suite directly from the repository r
 python -W error -m unittest discover -s tests -v
 ```
 
+To also include the optional real `agy acp` cross-restart E2E test (requires a locally installed and authenticated `agy` CLI), set `AGY_LARK_REAL_AGY_E2E=1`.
+
 ## Runtime & Safety Design
 
 `agy-lark` is designed around explicit, fail-closed operational boundaries:
@@ -131,14 +133,14 @@ python -W error -m unittest discover -s tests -v
 - **Fail-Closed Authorization**: If `AGY_LARK_ALLOWED_OPEN_IDS` is empty, **all** incoming messages and card actions (`stop`, `model`, `effort`) are rejected by default. Group `@mention` routing is disabled unless `AGY_LARK_ALLOW_GROUP_MENTION=true` is explicitly set.
 - **Cross-Platform `agy` Discovery**: Resolves `AGY_EXE` first if set, otherwise looks up `agy` via `PATH` — no hardcoded OS-specific installation paths.
 - **Throttled Streaming & Turn Safety**: Coalesces high-frequency ACP output chunks via `AGY_LARK_STREAM_THROTTLE` (default `0.25s`), enforces per-turn timeouts (`AGY_TURN_TIMEOUT_SECONDS`), and cleans up child pipes via ACP cancellation on `SIGINT` / `SIGTERM`.
-- **Per-Conversation State Recovery**: Maintains isolated conversation keys (`p2p:<chat_id>` and thread root mapping), re-applying each conversation's selected model and effort automatically if the local ACP subprocess restarts.
+- **Persistent Session & Config Recovery**: Atomically persists isolated conversation mappings (`p2p:<chat_id>`, thread aliases, and reply message bindings), workspace `cwd`, and selected model/effort in `{AGY_LARK_DATA_DIR}/sessions.json`. After a daemon or ACP subprocess restart, the first incoming turn or command resumes the prior session on demand via `session/resume` and replays its saved model and effort — safely falling back to a new session (or default settings) with an explicit diagnostic notice if the workspace changed, the session expired, or a saved option is unavailable.
 
 ## Privacy Notice
 
 `agy-lark` strictly separates **public repository assets** from **private local runtime state**:
 
 - **Tracked in Git**: source code (`src/agy_lark/`), unit tests (`tests/`), `.env.example`, `pyproject.toml`, `LICENSE`, documentation, and logo assets.
-- **Local-only (`.gitignore`)**: `.env`, `FEISHU_APP_SECRET`, authorized `open_id` lists, `.agy-lark/`, logs, state/database files, and `.venv/`.
+- **Local-only (`.gitignore`)**: `.env`, `FEISHU_APP_SECRET`, authorized `open_id` lists, `.agy-lark/`, `sessions.json`, logs, state/database files, and `.venv/`.
 
 **Never commit `.env` or runtime state files to a public repository.**
 

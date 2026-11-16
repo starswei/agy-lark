@@ -228,6 +228,30 @@ for raw_line in sys.stdin:
                 "configOptions": [],
             },
         })
+    elif method == "session/resume":
+        sid = params.get("sessionId", "")
+        with state_lock:
+            exists = sid in active_sessions
+        if not exists:
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32603,
+                    "message": f"Failed to read session {sid}; retry, or load it with session/load",
+                },
+            })
+        else:
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "sessionId": sid,
+                    "models": {"currentModelId": "mock-model-default", "availableModels": []},
+                    "modes": {"currentModeId": "default", "availableModes": []},
+                    "configOptions": [],
+                },
+            })
     elif method == "session/set_mode":
         send({
             "jsonrpc": "2.0",
@@ -421,6 +445,27 @@ class TestAgyAcpClient(unittest.TestCase):
                 client.prompt("missing", "hello")
             self.assertEqual(ctx.exception.code, -32602)
             self.assertIn("Session not found", str(ctx.exception))
+
+    def test_resume_session_success_error_and_validation(self) -> None:
+        updates_during_resume: list[AcpSessionUpdate] = []
+        with self._build_client(on_update=updates_during_resume.append) as client:
+            created = client.new_session()
+            sid = created["sessionId"]
+            updates_during_resume.clear()
+
+            resumed = client.resume_session(sid)
+            self.assertEqual(resumed["sessionId"], sid)
+            self.assertEqual(resumed["models"]["currentModelId"], "mock-model-default")
+            # session/resume 不应触发历史 session/update 回放通知
+            self.assertEqual(updates_during_resume, [])
+
+            with self.assertRaises(AcpError) as ctx:
+                client.resume_session("missing-session-id")
+            self.assertEqual(ctx.exception.code, -32603)
+            self.assertIn("Failed to read session", str(ctx.exception))
+
+            with self.assertRaises(ValueError):
+                client.resume_session("   ")
 
 
 if __name__ == "__main__":

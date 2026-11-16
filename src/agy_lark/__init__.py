@@ -71,6 +71,15 @@ from .daemon import (
     extract_incoming_message,
     main,
 )
+from .session_store import (
+    DEFAULT_MAPPING_CAPACITY,
+    DEFAULT_SESSIONS_FILENAME,
+    SESSION_STORE_SCHEMA_VERSION,
+    JsonSessionStore,
+    PersistedConversation,
+    PersistedSessionState,
+    SessionStore,
+)
 
 __version__ = "0.1.0"
 
@@ -90,12 +99,15 @@ __all__ = [
     "CONTENT_ELEMENT_ID",
     "CardRunState",
     "CardTransport",
+    "DEFAULT_MAPPING_CAPACITY",
+    "DEFAULT_SESSIONS_FILENAME",
     "EFFORT_HINT_ELEMENT_ID",
     "EFFORT_SELECT_ACTION_NAME",
     "EFFORT_STATUS_ELEMENT_ID",
     "EffortSelectCallbackPayload",
     "IncomingMention",
     "IncomingMessage",
+    "JsonSessionStore",
     "LarkApiError",
     "LarkCardTransport",
     "LarkMessageSender",
@@ -104,9 +116,13 @@ __all__ = [
     "MODEL_STATUS_ELEMENT_ID",
     "MessageSender",
     "ModelSelectCallbackPayload",
+    "PersistedConversation",
+    "PersistedSessionState",
+    "SESSION_STORE_SCHEMA_VERSION",
     "STATUS_ELEMENT_ID",
     "STOP_ACTION_NAME",
     "STOP_BUTTON_ELEMENT_ID",
+    "SessionStore",
     "StopCallbackPayload",
     "StreamingCardUpdater",
     "__version__",

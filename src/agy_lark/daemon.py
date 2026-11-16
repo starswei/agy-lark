@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import importlib
 import json
 import logging
+import os
 from pathlib import Path
 import signal
 import sys
@@ -43,10 +45,18 @@ from .card_streamer import (
     parse_stop_callback_value,
 )
 from .config import AgyLarkConfig, load_config
+from .session_store import (
+    DEFAULT_MAPPING_CAPACITY,
+    DEFAULT_SESSIONS_FILENAME,
+    JsonSessionStore,
+    PersistedConversation,
+    PersistedSessionState,
+    SessionStore,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DEDUPE_CAPACITY = 2048
+_DEFAULT_DEDUPE_CAPACITY = DEFAULT_MAPPING_CAPACITY
 _DEFAULT_MAX_WORKERS = 8
 _TURN_READY_WAIT_SECONDS = 15.0
 
@@ -121,6 +131,16 @@ class AcpClientProtocol(Protocol):
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """创建新的 ACP 会话并返回包含 sessionId 的元数据字典。"""
+
+    def resume_session(
+        self,
+        session_id: str,
+        cwd: str | Path | None = None,
+        mcp_servers: Sequence[dict[str, Any]] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """恢复已有 ACP 会话（`session/resume`）并返回包含 sessionId 的元数据字典。"""
 
     def prompt_async(
         self,
@@ -744,6 +764,16 @@ class _BoundedOrderedDict:
         self.put(key, True)
         return True
 
+    def items_tuple(self) -> tuple[tuple[str, Any], ...]:
+        """按从旧到新顺序返回当前有序键值元组快照。"""
+        return tuple(self._items.items())
+
+    def load_items(self, pairs: Iterable[tuple[str, Any]]) -> None:
+        """清空并用给定有序键值序列重新填充有界字典。"""
+        self._items.clear()
+        for key, value in pairs:
+            self.put(key, value)
+
     def clear(self) -> None:
         self._items.clear()
 
@@ -771,12 +801,45 @@ class _ConversationEntry:
     conv_key: str
     dispatch_lock: threading.RLock = field(default_factory=threading.RLock)
     session_id: str | None = None
+    persisted_cwd: str | None = None
+    session_attached: bool = False
     active_turn: _ActiveTurn | None = None
     uses_config_options: bool = False
     model_id: str | None = None
     available_models: tuple[AcpModelOption, ...] = ()
     effort_id: str | None = None
     available_efforts: tuple[AcpEffortOption, ...] = ()
+
+
+@dataclass(frozen=True)
+class _EnsureSessionResult:
+    """按需建立或恢复 ACP 会话的返回结果（含降级/回退诊断通知）。"""
+
+    session_id: str | None
+    error: str | None = None
+    notice: str | None = None
+
+
+def _format_workspace_path(path: str | Path) -> str:
+    """将工作区路径规范化为可持久化存储的绝对路径字符串。"""
+    return str(Path(os.path.expanduser(str(path))).resolve())
+
+
+def _normalize_workspace_compare_key(path: str | Path | None) -> str | None:
+    """将工作区路径规范化为跨平台可比对键。"""
+    if path is None:
+        return None
+    raw = str(path).strip()
+    if not raw:
+        return None
+    return os.path.normcase(_format_workspace_path(raw))
+
+
+def _workspaces_match(left: str | Path | None, right: str | Path | None) -> bool:
+    """校验持久化历史 cwd 与当前工作区路径是否一致。"""
+    left_key = _normalize_workspace_compare_key(left)
+    right_key = _normalize_workspace_compare_key(right)
+    return left_key is not None and right_key is not None and left_key == right_key
 
 
 @dataclass
@@ -803,6 +866,7 @@ class AgyLarkDaemon:
         acp_client: AcpClientProtocol | None = None,
         transport: CardTransport | None = None,
         message_sender: MessageSender | None = None,
+        session_store: SessionStore | None = None,
         lark_client: Any = None,
         ws_client: Any = None,
         bot_open_id: str | None = None,
@@ -822,6 +886,14 @@ class AgyLarkDaemon:
         self._ws_client = ws_client
         self._transport = transport
         self._message_sender = message_sender
+        self.session_store: SessionStore = (
+            session_store
+            if session_store is not None
+            else JsonSessionStore(
+                config.data_dir / DEFAULT_SESSIONS_FILENAME,
+                max_mapping_entries=_DEFAULT_DEDUPE_CAPACITY,
+            )
+        )
 
         if acp_client is not None:
             self.acp_client: AcpClientProtocol = acp_client
@@ -833,11 +905,16 @@ class AgyLarkDaemon:
             )
 
         self._lock = threading.RLock()
+        self._acp_start_lock = threading.Lock()
+        self._persist_lock = threading.Lock()
+        self._state_version = 0
+        self._persisted_version = 0
         self._seen_messages = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._thread_aliases = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._reply_message_keys = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._selector_cards = _BoundedOrderedDict(_DEFAULT_DEDUPE_CAPACITY)
         self._conversations: dict[str, _ConversationEntry] = {}
+        self._persisted_conversations: dict[str, PersistedConversation] = {}
         self._session_entries: dict[str, _ConversationEntry] = {}
         self._active_turns: dict[str, _ActiveTurn] = {}
         self._default_available_models: tuple[AcpModelOption, ...] = ()
@@ -848,6 +925,70 @@ class AgyLarkDaemon:
         )
         self._closing = False
         self._closed = False
+        self._load_persisted_state()
+
+    def _load_persisted_state(self) -> None:
+        """启动时仅将持久化会话与群聊路由载入内存，保留未附着态以待首轮消息按需恢复。"""
+        state = self.session_store.load()
+        with self._lock:
+            self._thread_aliases.load_items(state.thread_aliases)
+            self._reply_message_keys.load_items(state.reply_message_keys)
+            for conv_key, item in state.conversations.items():
+                self._persisted_conversations[conv_key] = item
+                self._conversations[conv_key] = _ConversationEntry(
+                    conv_key=conv_key,
+                    session_id=item.session_id,
+                    persisted_cwd=item.cwd,
+                    session_attached=False,
+                    model_id=item.model_id,
+                    effort_id=item.effort_id,
+                )
+
+    def _build_persist_snapshot_locked(self) -> tuple[int, PersistedSessionState]:
+        return (
+            self._state_version,
+            PersistedSessionState(
+                conversations=dict(self._persisted_conversations),
+                thread_aliases=self._thread_aliases.items_tuple(),
+                reply_message_keys=self._reply_message_keys.items_tuple(),
+            ),
+        )
+
+    def _persist_state(self) -> None:
+        with self._persist_lock:
+            with self._lock:
+                version, snapshot = self._build_persist_snapshot_locked()
+            if version <= self._persisted_version:
+                return
+            try:
+                self.session_store.save(snapshot)
+            except Exception:
+                logger.exception("写入会话持久化状态失败")
+                return
+            self._persisted_version = version
+
+    def _commit_entry_persistence_locked(self, entry: _ConversationEntry) -> None:
+        """在持有 `entry.dispatch_lock` 时更新会话持久化镜像并原子落盘。"""
+        with self._lock:
+            if entry.session_id is None and entry.model_id is None and entry.effort_id is None:
+                self._persisted_conversations.pop(entry.conv_key, None)
+            else:
+                self._persisted_conversations[entry.conv_key] = PersistedConversation(
+                    session_id=entry.session_id,
+                    cwd=entry.persisted_cwd,
+                    model_id=entry.model_id,
+                    effort_id=entry.effort_id,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+            self._state_version += 1
+        self._persist_state()
+
+    def _record_reply_message_key(self, message_id: str, conv_key: str) -> None:
+        """记录机器人回复消息 ID 到 conv_key 的映射并及时落盘。"""
+        with self._lock:
+            self._reply_message_keys.put(message_id, conv_key)
+            self._state_version += 1
+        self._persist_state()
 
     @property
     def transport(self) -> CardTransport:
@@ -1021,6 +1162,7 @@ class AgyLarkDaemon:
         if msg.chat_type == "p2p":
             return f"p2p:{msg.chat_id}"
 
+        need_persist = False
         with self._lock:
             if msg.thread_id:
                 thread_alias = f"thread:{msg.chat_id}:{msg.thread_id}"
@@ -1032,19 +1174,37 @@ class AgyLarkDaemon:
                 root_key = f"group:{msg.chat_id}:root:{msg.root_id}"
                 if msg.thread_id:
                     self._thread_aliases.put(f"thread:{msg.chat_id}:{msg.thread_id}", root_key)
-                return root_key
-
-            if msg.thread_id:
-                thread_key = f"group:{msg.chat_id}:thread:{msg.thread_id}"
-                self._thread_aliases.put(f"thread:{msg.chat_id}:{msg.thread_id}", thread_key)
-                return thread_key
-
-            if msg.parent_id:
+                    self._state_version += 1
+                    need_persist = True
+                resolved = root_key
+            elif msg.parent_id:
                 parent_key = self._reply_message_keys.get(msg.parent_id)
                 if isinstance(parent_key, str) and parent_key:
-                    return parent_key
+                    if msg.thread_id:
+                        self._thread_aliases.put(f"thread:{msg.chat_id}:{msg.thread_id}", parent_key)
+                        self._state_version += 1
+                        need_persist = True
+                    resolved = parent_key
+                elif msg.thread_id:
+                    thread_key = f"group:{msg.chat_id}:thread:{msg.thread_id}"
+                    self._thread_aliases.put(f"thread:{msg.chat_id}:{msg.thread_id}", thread_key)
+                    self._state_version += 1
+                    need_persist = True
+                    resolved = thread_key
+                else:
+                    resolved = f"group:{msg.chat_id}:root:{msg.message_id}"
+            elif msg.thread_id:
+                thread_key = f"group:{msg.chat_id}:thread:{msg.thread_id}"
+                self._thread_aliases.put(f"thread:{msg.chat_id}:{msg.thread_id}", thread_key)
+                self._state_version += 1
+                need_persist = True
+                resolved = thread_key
+            else:
+                resolved = f"group:{msg.chat_id}:root:{msg.message_id}"
 
-            return f"group:{msg.chat_id}:root:{msg.message_id}"
+        if need_persist:
+            self._persist_state()
+        return resolved
 
     def get_session_id_for_key(self, conv_key: str) -> str | None:
         """查询给定会话 Key 当前绑定的 ACP session_id（未创建时返回 None）。"""
@@ -1070,14 +1230,15 @@ class AgyLarkDaemon:
             return entry
 
     def _ensure_acp_started(self) -> None:
-        with self._lock:
-            if self.acp_client.is_running:
-                return
-            # 底层子进程失效或重启后，旧会话标识不再有效，需清理缓存以便重建
-            for entry in self._conversations.values():
-                entry.session_id = None
-            self._session_entries.clear()
-        self.acp_client.start()
+        with self._acp_start_lock:
+            with self._lock:
+                if self.acp_client.is_running:
+                    return
+                # 底层子进程失效或重启后，保留 session_id 以便按需 session/resume，仅重置附着态
+                for entry in self._conversations.values():
+                    entry.session_attached = False
+                self._session_entries.clear()
+            self.acp_client.start()
 
     def _process_incoming_message(self, msg: IncomingMessage) -> None:
         conv_key = self.resolve_conversation_key(msg)
@@ -1114,6 +1275,41 @@ class AgyLarkDaemon:
         if entry.uses_config_options:
             entry.available_efforts = parse_available_efforts(payload)
             entry.effort_id = parse_current_effort_id(payload)
+
+    def _reset_entry_server_capabilities_locked(
+        self,
+        entry: _ConversationEntry,
+        payload: Any,
+    ) -> None:
+        """在新建或恢复会话刚收到服务端元数据时，重置会话能力与服务端默认模型/思考强度。"""
+        has_model_cfg = has_config_option(payload, option_id=ACP_MODEL_CONFIG_ID)
+        has_effort_cfg = has_config_option(payload, option_id=ACP_EFFORT_CONFIG_ID)
+        entry.uses_config_options = has_model_cfg or has_effort_cfg
+
+        models = parse_available_models(payload)
+        if models:
+            entry.available_models = models
+            with self._lock:
+                self._default_available_models = models
+
+        entry.model_id = parse_current_model_id(payload)
+        if entry.uses_config_options:
+            entry.available_efforts = parse_available_efforts(payload)
+            entry.effort_id = parse_current_effort_id(payload)
+        else:
+            entry.available_efforts = ()
+            entry.effort_id = None
+
+    def _clear_entry_session_binding_locked(self, entry: _ConversationEntry) -> None:
+        """在持有 `entry.dispatch_lock` 时清理失效的旧 ACP session_id 绑定。"""
+        old_sid = entry.session_id
+        entry.session_id = None
+        entry.persisted_cwd = None
+        entry.session_attached = False
+        if old_sid is not None:
+            with self._lock:
+                if self._session_entries.get(old_sid) is entry:
+                    self._session_entries.pop(old_sid, None)
 
     def _apply_session_config_locked(
         self,
@@ -1156,44 +1352,21 @@ class AgyLarkDaemon:
         else:
             entry.effort_id = target_value
 
-    def _ensure_entry_session_locked(
+    def _replay_or_apply_session_configs_locked(
         self,
         entry: _ConversationEntry,
+        session_id: str,
         *,
-        initial_model_id: str | None = None,
-        initial_effort_id: str | None = None,
-    ) -> tuple[str | None, str | None]:
-        """在持有 `entry.dispatch_lock` 的前提下确保会话已建立并应用目标模型与思考强度。"""
-        if entry.session_id is not None:
-            return entry.session_id, None
-
-        desired_model = (
-            (initial_model_id.strip() if isinstance(initial_model_id, str) else "")
-            or entry.model_id
-            or self.config.agy_model
-            or ""
-        ).strip()
-        desired_effort = (
-            (initial_effort_id.strip() if isinstance(initial_effort_id, str) else "")
-            or entry.effort_id
-            or self.config.agy_effort
-            or ""
-        ).strip()
-
-        try:
-            session_info = self.acp_client.new_session(cwd=self.config.default_workspace)
-        except Exception as exc:
-            logger.exception("创建 ACP 会话失败 (conv_key=%s)", entry.conv_key)
-            return None, f"启动 Antigravity 会话失败：{exc}"
-
-        raw_sid = session_info.get("sessionId")
-        if not isinstance(raw_sid, str) or not raw_sid.strip():
-            return None, "启动 Antigravity 会话失败：未返回有效 sessionId。"
-
-        session_id = raw_sid.strip()
-        self._sync_entry_config_locked(entry, session_info)
-
-        if desired_model and desired_model != entry.model_id:
+        desired_model: str,
+        desired_effort: str,
+        explicit_model: str,
+        explicit_effort: str,
+        fallback_on_failure: bool,
+        had_persisted_effort: bool,
+        notices: list[str],
+    ) -> str | None:
+        """在持有 `entry.dispatch_lock` 时重放或设置模型与思考强度；回退失败项时附带告警。"""
+        if desired_model and desired_model != (entry.model_id or ""):
             try:
                 self._apply_session_config_locked(
                     entry,
@@ -1202,26 +1375,48 @@ class AgyLarkDaemon:
                     target_value=desired_model,
                 )
             except Exception as exc:
-                logger.exception(
-                    "为新建 ACP 会话设置模型失败 (conv_key=%s, session_id=%s, model_id=%s)",
+                is_explicit_model = bool(explicit_model and desired_model == explicit_model)
+                if is_explicit_model or not fallback_on_failure:
+                    logger.exception(
+                        "为 ACP 会话设置模型失败 (conv_key=%s, session_id=%s, model_id=%s)",
+                        entry.conv_key,
+                        session_id,
+                        desired_model,
+                    )
+                    return f"设置模型 {desired_model} 失败：{exc}"
+                logger.warning(
+                    "重放历史模型 %s 失败，保留会话上下文并回退为默认模型 (conv_key=%s, session_id=%s): %s",
+                    desired_model,
                     entry.conv_key,
                     session_id,
-                    desired_model,
+                    exc,
                 )
-                self._cleanup_failed_session(session_id)
-                return None, f"设置模型 {desired_model} 失败：{exc}"
+                notices.append(
+                    f"⚠️ 原选定模型 `{desired_model}` 当前不可用（{exc}），已保留会话上下文并回退为默认模型。"
+                )
 
         if desired_effort:
+            is_explicit_effort = bool(explicit_effort and desired_effort == explicit_effort)
             if entry.uses_config_options and not entry.available_efforts:
-                if initial_effort_id:
-                    self._cleanup_failed_session(session_id)
-                    return None, "当前模型不支持调节思考强度。"
-                logger.debug(
-                    "当前模型不支持 thought_level，跳过默认思考强度 (conv_key=%s, effort=%s)",
-                    entry.conv_key,
-                    desired_effort,
-                )
-            elif desired_effort != entry.effort_id:
+                if is_explicit_effort:
+                    return "当前模型不支持调节思考强度。"
+                if fallback_on_failure and had_persisted_effort:
+                    logger.warning(
+                        "当前模型不支持原思考强度 %s，保留会话上下文并回退为默认设置 (conv_key=%s, session_id=%s)",
+                        desired_effort,
+                        entry.conv_key,
+                        session_id,
+                    )
+                    notices.append(
+                        f"⚠️ 当前模型不支持原思考强度 `{desired_effort}`，已保留会话上下文并回退为默认设置。"
+                    )
+                else:
+                    logger.debug(
+                        "当前模型不支持 thought_level，跳过默认思考强度 (conv_key=%s, effort=%s)",
+                        entry.conv_key,
+                        desired_effort,
+                    )
+            elif desired_effort != (entry.effort_id or ""):
                 try:
                     self._apply_session_config_locked(
                         entry,
@@ -1230,19 +1425,180 @@ class AgyLarkDaemon:
                         target_value=desired_effort,
                     )
                 except Exception as exc:
-                    logger.exception(
-                        "为新建 ACP 会话设置思考强度失败 (conv_key=%s, session_id=%s, effort=%s)",
+                    if is_explicit_effort or not fallback_on_failure:
+                        logger.exception(
+                            "为 ACP 会话设置思考强度失败 (conv_key=%s, session_id=%s, effort=%s)",
+                            entry.conv_key,
+                            session_id,
+                            desired_effort,
+                        )
+                        return f"设置思考强度 {desired_effort} 失败：{exc}"
+                    logger.warning(
+                        "重放历史思考强度 %s 失败，保留会话上下文并回退为默认设置 (conv_key=%s, session_id=%s): %s",
+                        desired_effort,
                         entry.conv_key,
                         session_id,
-                        desired_effort,
+                        exc,
                     )
-                    self._cleanup_failed_session(session_id)
-                    return None, f"设置思考强度 {desired_effort} 失败：{exc}"
+                    notices.append(
+                        f"⚠️ 原选定思考强度 `{desired_effort}` 当前不可用（{exc}），已保留会话上下文并回退为默认设置。"
+                    )
+
+        return None
+
+    def _ensure_entry_session_locked(
+        self,
+        entry: _ConversationEntry,
+        *,
+        initial_model_id: str | None = None,
+        initial_effort_id: str | None = None,
+    ) -> _EnsureSessionResult:
+        """在持有 `entry.dispatch_lock` 的前提下按需恢复或新建 ACP 会话并重放模型与思考强度。"""
+        if entry.session_id is not None and entry.session_attached:
+            return _EnsureSessionResult(session_id=entry.session_id)
+
+        explicit_model = initial_model_id.strip() if isinstance(initial_model_id, str) else ""
+        explicit_effort = initial_effort_id.strip() if isinstance(initial_effort_id, str) else ""
+        had_persisted_effort = bool(isinstance(entry.effort_id, str) and entry.effort_id.strip())
+        desired_model = (explicit_model or entry.model_id or self.config.agy_model or "").strip()
+        desired_effort = (explicit_effort or entry.effort_id or self.config.agy_effort or "").strip()
+
+        current_workspace = self.config.default_workspace
+        current_cwd = _format_workspace_path(current_workspace)
+        notices: list[str] = []
+        degraded = False
+
+        if entry.session_id is not None:
+            candidate_sid = entry.session_id
+            if not _workspaces_match(entry.persisted_cwd, current_workspace):
+                degraded = True
+                logger.warning(
+                    "工作区路径已变更，放弃恢复旧会话并将开启新会话 "
+                    "(conv_key=%s, old_session_id=%s, old_cwd=%s, new_cwd=%s)",
+                    entry.conv_key,
+                    candidate_sid,
+                    entry.persisted_cwd,
+                    current_cwd,
+                )
+                if entry.persisted_cwd:
+                    notices.append(
+                        f"⚠️ 工作区路径已变更（{entry.persisted_cwd} → {current_cwd}），已为新工作区开启新会话。"
+                    )
+                else:
+                    notices.append("⚠️ 历史会话工作区信息缺失，已为当前工作区开启新会话。")
+                self._clear_entry_session_binding_locked(entry)
+            else:
+                resume_fn = getattr(self.acp_client, "resume_session", None)
+                try:
+                    if not callable(resume_fn):
+                        raise NotImplementedError("当前 ACP 客户端不支持 session/resume")
+                    session_info = resume_fn(candidate_sid, cwd=current_workspace)
+                except Exception as exc:
+                    degraded = True
+                    logger.warning(
+                        "恢复历史 ACP 会话失败，将降级开启新会话 (conv_key=%s, session_id=%s): %s",
+                        entry.conv_key,
+                        candidate_sid,
+                        exc,
+                    )
+                    notices.append(f"⚠️ 原会话已失效或无法恢复（{exc}），已为您开启新会话。")
+                    self._clear_entry_session_binding_locked(entry)
+                else:
+                    raw_resumed_sid = (
+                        session_info.get("sessionId") if isinstance(session_info, dict) else None
+                    )
+                    effective_sid = (
+                        raw_resumed_sid.strip()
+                        if isinstance(raw_resumed_sid, str) and raw_resumed_sid.strip()
+                        else candidate_sid
+                    )
+                    self._reset_entry_server_capabilities_locked(entry, session_info)
+                    config_error = self._replay_or_apply_session_configs_locked(
+                        entry,
+                        effective_sid,
+                        desired_model=desired_model,
+                        desired_effort=desired_effort,
+                        explicit_model=explicit_model,
+                        explicit_effort=explicit_effort,
+                        fallback_on_failure=True,
+                        had_persisted_effort=had_persisted_effort,
+                        notices=notices,
+                    )
+                    entry.session_id = effective_sid
+                    entry.persisted_cwd = current_cwd
+                    entry.session_attached = True
+                    with self._lock:
+                        if candidate_sid != effective_sid and self._session_entries.get(candidate_sid) is entry:
+                            self._session_entries.pop(candidate_sid, None)
+                        self._session_entries[effective_sid] = entry
+                    self._commit_entry_persistence_locked(entry)
+                    combined_notice = "\n".join(notices) if notices else None
+                    if config_error is not None:
+                        return _EnsureSessionResult(
+                            session_id=None,
+                            error=config_error,
+                            notice=combined_notice,
+                        )
+                    return _EnsureSessionResult(
+                        session_id=effective_sid,
+                        notice=combined_notice,
+                    )
+
+        try:
+            session_info = self.acp_client.new_session(cwd=current_workspace)
+        except Exception as exc:
+            logger.exception("创建 ACP 会话失败 (conv_key=%s)", entry.conv_key)
+            if degraded:
+                self._commit_entry_persistence_locked(entry)
+            return _EnsureSessionResult(
+                session_id=None,
+                error=f"启动 Antigravity 会话失败：{exc}",
+                notice="\n".join(notices) if notices else None,
+            )
+
+        raw_sid = session_info.get("sessionId") if isinstance(session_info, dict) else None
+        if not isinstance(raw_sid, str) or not raw_sid.strip():
+            if degraded:
+                self._commit_entry_persistence_locked(entry)
+            return _EnsureSessionResult(
+                session_id=None,
+                error="启动 Antigravity 会话失败：未返回有效 sessionId。",
+                notice="\n".join(notices) if notices else None,
+            )
+
+        session_id = raw_sid.strip()
+        self._reset_entry_server_capabilities_locked(entry, session_info)
+        config_error = self._replay_or_apply_session_configs_locked(
+            entry,
+            session_id,
+            desired_model=desired_model,
+            desired_effort=desired_effort,
+            explicit_model=explicit_model,
+            explicit_effort=explicit_effort,
+            fallback_on_failure=degraded,
+            had_persisted_effort=had_persisted_effort,
+            notices=notices,
+        )
+        if config_error is not None:
+            self._cleanup_failed_session(session_id)
+            if degraded:
+                self._commit_entry_persistence_locked(entry)
+            return _EnsureSessionResult(
+                session_id=None,
+                error=config_error,
+                notice="\n".join(notices) if notices else None,
+            )
 
         entry.session_id = session_id
+        entry.persisted_cwd = current_cwd
+        entry.session_attached = True
         with self._lock:
             self._session_entries[session_id] = entry
-        return session_id, None
+        self._commit_entry_persistence_locked(entry)
+        return _EnsureSessionResult(
+            session_id=session_id,
+            notice="\n".join(notices) if notices else None,
+        )
 
     def _cleanup_failed_session(self, session_id: str) -> None:
         try:
@@ -1309,17 +1665,19 @@ class AgyLarkDaemon:
             return
 
         entry = self._get_or_create_entry(conv_key)
+        session_notice: str | None = None
         with entry.dispatch_lock:
-            session_id, session_err = self._ensure_entry_session_locked(entry)
-            if session_id is None:
+            session_res = self._ensure_entry_session_locked(entry)
+            if session_res.session_id is None:
                 self._safe_send_text(
                     chat_id=msg.chat_id,
-                    text=session_err or "启动 Antigravity 会话失败。",
+                    text=session_res.error or "启动 Antigravity 会话失败。",
                     reply_to_message_id=msg.message_id,
                     reply_in_thread=bool(msg.thread_id),
                     conv_key=conv_key,
                 )
                 return
+            session_notice = session_res.notice
             with self._lock:
                 default_models = self._default_available_models
             models = entry.available_models or default_models
@@ -1327,6 +1685,15 @@ class AgyLarkDaemon:
             current_model_id = entry.model_id or (self.config.agy_model or None)
             current_effort_id = entry.effort_id or (self.config.agy_effort or None)
             current_model_name = self._format_current_model_name_locked(entry)
+
+        if session_notice:
+            self._safe_send_text(
+                chat_id=msg.chat_id,
+                text=session_notice,
+                reply_to_message_id=msg.message_id,
+                reply_in_thread=bool(msg.thread_id),
+                conv_key=conv_key,
+            )
 
         card_json = self._build_selector_card_payload(
             kind=kind,
@@ -1359,6 +1726,7 @@ class AgyLarkDaemon:
         if sent_msg_id:
             with self._lock:
                 self._reply_message_keys.put(sent_msg_id, conv_key)
+                self._state_version += 1
                 self._selector_cards.put(
                     sent_msg_id,
                     _SelectorCardRecord(
@@ -1370,6 +1738,7 @@ class AgyLarkDaemon:
                         current_model_name=current_model_name,
                     ),
                 )
+            self._persist_state()
 
     def _handle_selector_callback(
         self,
@@ -1407,6 +1776,7 @@ class AgyLarkDaemon:
             return {"toast": {"type": "error", "content": f"切换{action_noun}失败：{exc}"}}
 
         entry = self._get_or_create_entry(conv_key)
+        session_notice: str | None = None
         with entry.dispatch_lock:
             active_turn = entry.active_turn
             if active_turn is not None and not active_turn.done_event.is_set():
@@ -1417,23 +1787,24 @@ class AgyLarkDaemon:
                     }
                 }
 
-            if entry.session_id is None:
+            if entry.session_id is None or not entry.session_attached:
                 init_kw = (
                     {"initial_model_id": target_value}
                     if kind == "model"
                     else {"initial_effort_id": target_value}
                 )
-                session_id, session_err = self._ensure_entry_session_locked(
+                session_res = self._ensure_entry_session_locked(
                     entry,
                     **init_kw,
                 )
-                if session_id is None:
+                if session_res.session_id is None:
                     return {
                         "toast": {
                             "type": "error",
-                            "content": session_err or f"切换{action_noun}失败",
+                            "content": session_res.error or f"切换{action_noun}失败",
                         }
                     }
+                session_notice = session_res.notice
             else:
                 try:
                     self._apply_session_config_locked(
@@ -1451,6 +1822,7 @@ class AgyLarkDaemon:
                         target_value,
                     )
                     return {"toast": {"type": "error", "content": f"切换{action_noun}失败：{exc}"}}
+                self._commit_entry_persistence_locked(entry)
 
             models_for_card = (
                 entry.available_models
@@ -1524,6 +1896,13 @@ class AgyLarkDaemon:
                     target_value,
                 )
 
+        if session_notice:
+            return {
+                "toast": {
+                    "type": "warning",
+                    "content": f"已切换{action_noun}为 {display_name}；{session_notice}",
+                }
+            }
         return {"toast": {"type": "success", "content": f"已切换{action_noun}为 {display_name}"}}
 
     def _handle_stop_command(self, msg: IncomingMessage, conv_key: str) -> None:
@@ -1576,18 +1955,21 @@ class AgyLarkDaemon:
             run_as_new_turn = False
             steer_turn: _ActiveTurn | None = None
             new_turn: _ActiveTurn | None = None
+            session_notice: str | None = None
 
             with entry.dispatch_lock:
-                session_id, session_err = self._ensure_entry_session_locked(entry)
+                session_res = self._ensure_entry_session_locked(entry)
+                session_id = session_res.session_id
                 if session_id is None:
                     self._safe_send_text(
                         chat_id=msg.chat_id,
-                        text=session_err or "启动 Antigravity 会话失败。",
+                        text=session_res.error or "启动 Antigravity 会话失败。",
                         reply_to_message_id=msg.message_id,
                         reply_in_thread=bool(msg.thread_id),
                         conv_key=conv_key,
                     )
                     return
+                session_notice = session_res.notice
 
                 existing_turn = entry.active_turn
                 if existing_turn is not None and not existing_turn.done_event.is_set():
@@ -1612,6 +1994,14 @@ class AgyLarkDaemon:
                     run_as_new_turn = True
 
             if run_as_new_turn and new_turn is not None:
+                if session_notice:
+                    self._safe_send_text(
+                        chat_id=msg.chat_id,
+                        text=session_notice,
+                        reply_to_message_id=msg.message_id,
+                        reply_in_thread=bool(msg.thread_id),
+                        conv_key=conv_key,
+                    )
                 self._execute_new_turn(entry, new_turn, msg)
                 return
 
@@ -1639,8 +2029,7 @@ class AgyLarkDaemon:
                 reply_in_thread=bool(msg.thread_id),
             )
             if sent_msg_id:
-                with self._lock:
-                    self._reply_message_keys.put(sent_msg_id, entry.conv_key)
+                self._record_reply_message_key(sent_msg_id, entry.conv_key)
 
             first_future = self.acp_client.prompt_async(
                 session_id,
@@ -1682,7 +2071,10 @@ class AgyLarkDaemon:
                 if not self.acp_client.is_running:
                     with entry.dispatch_lock:
                         if entry.session_id == session_id:
-                            entry.session_id = None
+                            entry.session_attached = False
+                    with self._lock:
+                        if self._session_entries.get(session_id) is entry:
+                            self._session_entries.pop(session_id, None)
                 self._finalize_error_safely(
                     updater,
                     str(exc) or type(exc).__name__,
@@ -1800,8 +2192,7 @@ class AgyLarkDaemon:
                 reply_in_thread=reply_in_thread,
             )
             if sent_id:
-                with self._lock:
-                    self._reply_message_keys.put(sent_id, conv_key)
+                self._record_reply_message_key(sent_id, conv_key)
         except Exception:
             logger.exception("发送文本提示消息失败 (chat_id=%s)", chat_id)
 
