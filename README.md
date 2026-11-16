@@ -17,7 +17,7 @@ delivering live streaming cards, mid-turn steering, timely cancellation via `ses
 
 [![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/starswei/agy-lark/blob/main/LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue)](https://github.com/starswei/agy-lark/releases)
 
 [English](https://github.com/starswei/agy-lark/blob/main/README.md) | [中文](https://github.com/starswei/agy-lark/blob/main/README.zh-CN.md)
 
@@ -26,7 +26,7 @@ delivering live streaming cards, mid-turn steering, timely cancellation via `ses
 ---
 
 > [!NOTE]
-> **Project Status (`v0.1.0`)**: End-to-end Feishu / Lark ↔ local `agy acp --stdio` bridging is complete and verified across the offline unit/integration test suite and live Feishu sessions — featuring Fail-Closed `open_id` authorization, a single-process `lark-oapi` WebSocket daemon, persistent cross-restart ACP session recovery (`session/resume`), CardKit 2.0 streaming cards, mid-turn steering, `/stop` cancellation, and single-column `/model` & `/effort` interactive selector cards.
+> **Project Status (`v0.1.1`)**: End-to-end Feishu / Lark ↔ local `agy acp --stdio` bridging is complete and verified across the offline unit/integration test suite and live Feishu sessions — featuring Fail-Closed `open_id` authorization, a single-process `lark-oapi` WebSocket daemon, persistent cross-restart ACP session recovery (`session/resume`), CardKit 2.0 streaming cards, mid-turn steering, `/stop` cancellation, and single-column `/model` & `/effort` interactive selector cards.
 
 ## What You Get
 

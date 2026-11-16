@@ -16,7 +16,7 @@
 
 [![CI](https://github.com/starswei/agy-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/starswei/agy-lark/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/starswei/agy-lark/blob/main/LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/starswei/agy-lark/releases)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue)](https://github.com/starswei/agy-lark/releases)
 
 [English](https://github.com/starswei/agy-lark/blob/main/README.md) | [中文](https://github.com/starswei/agy-lark/blob/main/README.zh-CN.md)
 
@@ -25,7 +25,7 @@
 ---
 
 > [!NOTE]
-> **当前状态**（`v0.1.0`）：已完成基于 `lark-oapi` 单进程 WebSocket 守护服务、CardKit 2.0 实时流式交互卡片与本地 `agy acp --stdio` 协议内核的端到端闭环，并已完成全量单元测试与飞书客户端实测验证，支持默认拒绝鉴权、跨重启会话持久化与按需 `session/resume` 恢复、运行中插话、`/stop` 与停止按钮及时取消，以及 `/model`、`/effort` 单列交互切换。
+> **当前状态**（`v0.1.1`）：已完成基于 `lark-oapi` 单进程 WebSocket 守护服务、CardKit 2.0 实时流式交互卡片与本地 `agy acp --stdio` 协议内核的端到端闭环，并已完成全量单元测试与飞书客户端实测验证，支持默认拒绝鉴权、跨重启会话持久化与按需 `session/resume` 恢复、运行中插话、`/stop` 与停止按钮及时取消，以及 `/model`、`/effort` 单列交互切换。
 
 ## 你能得到什么
 

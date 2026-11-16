@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agylark"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight, native-ACP bridge between Antigravity (agy) and Feishu / Lark via lark-oapi."
 readme = "README.md"
 license = "MIT"
