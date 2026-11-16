@@ -45,10 +45,12 @@ jobs:
         run: python -m pip install -e .
 
       - name: Verify CLI entrypoint
-        run: agy-lark --help
+        run: |
+          agylark --help
+          agy-lark --help
 
       - name: Verify package import and version
-        run: python -c "import agy_lark; print(agy_lark.__version__)"
+        run: python -c "import agylark; print(agylark.__version__)"
 
       - name: Run offline tests with unittest
         run: python -W error -m unittest discover -s tests -v

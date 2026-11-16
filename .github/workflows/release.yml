@@ -45,13 +45,13 @@ jobs:
           import tomllib
 
           sys.path.insert(0, "src")
-          import agy_lark
+          import agylark
 
           pyproject = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
           pkg_version = pyproject["project"]["version"]
-          assert agy_lark.__version__ == pkg_version, (
+          assert agylark.__version__ == pkg_version, (
               f"Version mismatch: pyproject.toml={pkg_version!r}, "
-              f"agy_lark.__version__={agy_lark.__version__!r}"
+              f"agylark.__version__={agylark.__version__!r}"
           )
 
           ref = os.environ.get("GITHUB_REF", "")
@@ -128,7 +128,8 @@ jobs:
           venv.create(venv_dir, with_pip=True)
           bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
           venv_python = str(bin_dir / ("python.exe" if os.name == "nt" else "python"))
-          cli_path = bin_dir / ("agy-lark.exe" if os.name == "nt" else "agy-lark")
+          cli_path = bin_dir / ("agylark.exe" if os.name == "nt" else "agylark")
+          legacy_cli_path = bin_dir / ("agy-lark.exe" if os.name == "nt" else "agy-lark")
 
           subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"], check=True)
           subprocess.run([venv_python, "-m", "pip", "install", str(wheel_path)], check=True)
@@ -136,11 +137,12 @@ jobs:
 
           # 在仓库外部路径验证安装后的命令行入口与 site-packages 导入来源
           subprocess.run([str(cli_path), "--help"], cwd=str(runner_temp), check=True)
+          subprocess.run([str(legacy_cli_path), "--help"], cwd=str(runner_temp), check=True)
           import_check = (
-              "import agy_lark, importlib.metadata as m; "
-              "print('IMPORTED:', agy_lark.__file__, agy_lark.__version__, m.version('agy-lark')); "
-              "assert 'site-packages' in str(agy_lark.__file__).lower(); "
-              "assert agy_lark.__version__ == m.version('agy-lark')"
+              "import agylark, importlib.metadata as m; "
+              "print('IMPORTED:', agylark.__file__, agylark.__version__, m.version('agylark')); "
+              "assert 'site-packages' in str(agylark.__file__).lower(); "
+              "assert agylark.__version__ == m.version('agylark')"
           )
           subprocess.run([venv_python, "-W", "error", "-c", import_check], cwd=str(runner_temp), check=True)
 

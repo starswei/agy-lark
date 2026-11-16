@@ -1,4 +1,4 @@
-"""agy_lark.config 离线单元测试（兼容 unittest 与 pytest）。"""
+"""agylark.config 离线单元测试（兼容 unittest 与 pytest）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from agy_lark import (
+from agylark import (
     AgyLarkConfig,
     is_authorized_open_id,
     load_config,

@@ -1,4 +1,4 @@
-"""agy_lark.card_streamer 离线单元测试（兼容 unittest 与 pytest）。"""
+"""agylark.card_streamer 离线单元测试（兼容 unittest 与 pytest）。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import threading
 from typing import Any
 import unittest
 
-from agy_lark import (
+from agylark import (
     CARD_SCHEMA_VERSION,
     CONTENT_ELEMENT_ID,
     EFFORT_HINT_ELEMENT_ID,
@@ -50,7 +50,7 @@ from agy_lark import (
     parse_model_select_callback_value,
     parse_stop_callback_value,
 )
-from agy_lark.card_streamer import DEFAULT_MAX_CONTENT_CHARS
+from agylark.card_streamer import DEFAULT_MAX_CONTENT_CHARS
 
 _VALID_ELEMENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,19}$")
 

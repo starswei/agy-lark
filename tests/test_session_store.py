@@ -1,4 +1,4 @@
-"""agy_lark.session_store 离线单元测试（原子写入、损坏容错与有界裁剪）。"""
+"""agylark.session_store 离线单元测试（原子写入、损坏容错与有界裁剪）。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
-from agy_lark import (
+from agylark import (
     DEFAULT_MAPPING_CAPACITY,
     SESSION_STORE_SCHEMA_VERSION,
     JsonSessionStore,
@@ -101,7 +101,7 @@ class TestJsonSessionStore(unittest.TestCase):
                     "p2p:oc_1": PersistedConversation(session_id="sess-new", cwd="/ws"),
                 }
             )
-            with mock.patch("agy_lark.session_store.os.replace", side_effect=OSError("disk error")):
+            with mock.patch("agylark.session_store.os.replace", side_effect=OSError("disk error")):
                 with self.assertRaises(OSError):
                     store.save(new_state)
 
@@ -146,14 +146,14 @@ class TestJsonSessionStore(unittest.TestCase):
 
             # 1) 损坏 JSON 文本
             store_path.write_text("{broken json", encoding="utf-8")
-            with self.assertLogs("agy_lark.session_store", level=logging.ERROR) as err_logs:
+            with self.assertLogs("agylark.session_store", level=logging.ERROR) as err_logs:
                 state = store.load()
             self.assertEqual(state, PersistedSessionState())
             self.assertTrue(any("读取或解析会话持久化文件失败" in line for line in err_logs.output))
 
             # 2) 非字典根节点
             store_path.write_text('["not", "an", "object"]', encoding="utf-8")
-            with self.assertLogs("agy_lark.session_store", level=logging.ERROR):
+            with self.assertLogs("agylark.session_store", level=logging.ERROR):
                 self.assertEqual(store.load(), PersistedSessionState())
 
             # 3) 不受支持的 schema_version（含布尔值 True 等畸形值）
@@ -162,7 +162,7 @@ class TestJsonSessionStore(unittest.TestCase):
                     json.dumps({"schema_version": bad_ver, "conversations": {}}),
                     encoding="utf-8",
                 )
-                with self.assertLogs("agy_lark.session_store", level=logging.ERROR):
+                with self.assertLogs("agylark.session_store", level=logging.ERROR):
                     self.assertEqual(store.load(), PersistedSessionState())
 
             # 4) 合法 schema_version 下局部脏条目容错跳过，保留合法条目
@@ -188,7 +188,7 @@ class TestJsonSessionStore(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertLogs("agy_lark.session_store", level=logging.WARNING):
+            with self.assertLogs("agylark.session_store", level=logging.WARNING):
                 partial = store.load()
             self.assertEqual(set(partial.conversations.keys()), {"valid_key"})
             self.assertEqual(partial.conversations["valid_key"].session_id, "sess-ok")

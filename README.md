@@ -102,8 +102,10 @@ cp .env.example .env
 ### Starting the Daemon
 
 ```bash
-agy-lark --env-file .env -v
+agylark --env-file .env -v
 ```
+
+- Also available via the compatible `agy-lark` CLI alias (`pip install -e .` installs both `agylark` and `agy-lark`).
 
 - `--env-file`: Path to your `.env` file (defaults to `.env` in the current directory; pass `""` to skip loading a `.env` file and read process environment variables only).
 - `--verbose` / `-v`: Enables `DEBUG`-level logging (overrides `AGY_LARK_LOG_LEVEL`).
@@ -139,7 +141,7 @@ To also include the optional real `agy acp` cross-restart E2E test (requires a l
 
 `agy-lark` strictly separates **public repository assets** from **private local runtime state**:
 
-- **Tracked in Git**: source code (`src/agy_lark/`), unit tests (`tests/`), `.env.example`, `pyproject.toml`, `LICENSE`, documentation, and logo assets.
+- **Tracked in Git**: source code (`src/agylark/`), unit tests (`tests/`), `.env.example`, `pyproject.toml`, `LICENSE`, documentation, and logo assets.
 - **Local-only (`.gitignore`)**: `.env`, `FEISHU_APP_SECRET`, authorized `open_id` lists, `.agy-lark/`, `sessions.json`, logs, state/database files, and `.venv/`.
 
 **Never commit `.env` or runtime state files to a public repository.**

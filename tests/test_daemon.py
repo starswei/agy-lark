@@ -1,4 +1,4 @@
-"""agy_lark.daemon 离线集成测试（兼容 unittest 与 pytest）。"""
+"""agylark.daemon 离线集成测试（兼容 unittest 与 pytest）。"""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from typing import Any
 import unittest
 from unittest import mock
 
-import agy_lark
-from agy_lark import (
+import agylark
+from agylark import (
     CARD_SCHEMA_VERSION,
     CONTENT_ELEMENT_ID,
     DEFAULT_MAPPING_CAPACITY,
@@ -59,7 +59,7 @@ from agy_lark import (
     parse_effort_select_callback_value,
     parse_model_select_callback_value,
 )
-from agy_lark.daemon import _import_lark_oapi
+from agylark.daemon import _import_lark_oapi
 
 _MOCK_DAEMON_ACP_SCRIPT = r"""
 import json
@@ -859,7 +859,7 @@ def _alloc_isolated_data_dir() -> Path:
     global _TEST_DATA_ROOT, _TEST_DATA_COUNTER
     with _TEST_DATA_LOCK:
         if _TEST_DATA_ROOT is None:
-            _TEST_DATA_ROOT = Path(tempfile.mkdtemp(prefix="agy_lark_test_data_"))
+            _TEST_DATA_ROOT = Path(tempfile.mkdtemp(prefix="agylark_test_data_"))
         _TEST_DATA_COUNTER += 1
         data_dir = _TEST_DATA_ROOT / f"run_{_TEST_DATA_COUNTER}"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -1006,7 +1006,7 @@ class TestSdkIntegrationAndLazyImport(unittest.TestCase):
                 "error",
                 "-c",
                 (
-                    "import sys, agy_lark, agy_lark.daemon; "
+                    "import sys, agylark, agylark.daemon; "
                     "assert 'lark_oapi.ws' not in sys.modules"
                 ),
             ],
@@ -1056,7 +1056,7 @@ class TestSdkIntegrationAndLazyImport(unittest.TestCase):
             env["PYTHONPATH"] = f"{tmp_dir}{os.pathsep}{repo_src}"
             script = (
                 "import warnings; "
-                "from agy_lark.daemon import _import_lark_oapi; "
+                "from agylark.daemon import _import_lark_oapi; "
                 "mod = _import_lark_oapi(); "
                 "assert mod.__name__ == 'lark_oapi'; "
                 "raised = False\n"
@@ -1541,7 +1541,7 @@ class TestStreamingEndToEndAndErrors(unittest.TestCase):
             self.assertEqual(content_el["content"], "第一段，第二段。")
 
             # 2) ACP 返回异常时优雅收口为红色错误卡片
-            with self.assertLogs("agy_lark.daemon", level="ERROR") as err_logs:
+            with self.assertLogs("agylark.daemon", level="ERROR") as err_logs:
                 f2 = daemon.dispatch_message_event(
                     _make_p2_message_event(message_id="om_err_1", text="error:trigger")
                 )
@@ -1574,7 +1574,7 @@ class TestStreamingEndToEndAndErrors(unittest.TestCase):
         )
         try:
             # 使用短超时快速验证超时分支
-            with self.assertLogs("agy_lark.daemon", level="WARNING") as warn_logs:
+            with self.assertLogs("agylark.daemon", level="WARNING") as warn_logs:
                 fut = daemon.dispatch_message_event(
                     _make_p2_message_event(message_id="om_timeout_1", text="hang")
                 )
@@ -1859,9 +1859,11 @@ class TestPackagingAndCli(unittest.TestCase):
     def test_pyproject_scripts_and_package_exports(self) -> None:
         pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
         data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("project", {}).get("version"), agy_lark.__version__)
+        self.assertEqual(data.get("project", {}).get("name"), "agylark")
+        self.assertEqual(data.get("project", {}).get("version"), agylark.__version__)
         scripts = data.get("project", {}).get("scripts", {})
-        self.assertEqual(scripts.get("agy-lark"), "agy_lark.daemon:main")
+        self.assertEqual(scripts.get("agylark"), "agylark.daemon:main")
+        self.assertEqual(scripts.get("agy-lark"), "agylark.daemon:main")
 
         for symbol in (
             "AgyLarkDaemon",
@@ -1882,7 +1884,7 @@ class TestPackagingAndCli(unittest.TestCase):
             "extract_incoming_message",
             "main",
         ):
-            self.assertTrue(hasattr(agy_lark, symbol), f"缺少导出符号: {symbol}")
+            self.assertTrue(hasattr(agylark, symbol), f"缺少导出符号: {symbol}")
 
     def test_main_cli_validation_and_runner_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1931,7 +1933,7 @@ class TestPackagingAndCli(unittest.TestCase):
                 def close(self) -> None:
                     lifecycle.append("close")
 
-            with mock.patch("agy_lark.daemon._configure_logging") as mock_cfg_log:
+            with mock.patch("agylark.daemon._configure_logging") as mock_cfg_log:
                 rc_ok = main(
                     ["--env-file", str(valid_env), "--verbose"],
                     daemon_factory=_FakeRunnerDaemon,  # type: ignore[arg-type]
@@ -1982,7 +1984,7 @@ class TestPackagingAndCli(unittest.TestCase):
                 def close(self) -> None:
                     return None
 
-            with mock.patch("agy_lark.daemon._configure_logging"):
+            with mock.patch("agylark.daemon._configure_logging"):
                 rc_ok = main(
                     ["--env-file", str(portable_env)],
                     daemon_factory=_FakeRunner,  # type: ignore[arg-type]
@@ -2059,7 +2061,7 @@ class TestPackagingAndCli(unittest.TestCase):
                 message_sender=_FakeMessageSender(),
                 ws_client=SimpleNamespace(start=lambda: None, stop=lambda: None),
             )
-            with self.assertLogs("agy_lark.daemon", level="INFO") as info_logs:
+            with self.assertLogs("agylark.daemon", level="INFO") as info_logs:
                 good_daemon.run_forever()
             self.assertTrue(
                 any(f"workspace={workspace_dir.resolve()}" in line for line in info_logs.output)
@@ -3120,7 +3122,7 @@ class TestSessionPersistenceAndResume(unittest.TestCase):
             )
 
             # 损坏文件仅记 ERROR 日志并降级为空状态，不阻塞启动
-            with self.assertLogs("agy_lark.session_store", level="ERROR"):
+            with self.assertLogs("agylark.session_store", level="ERROR"):
                 daemon_bad = AgyLarkDaemon(
                     config,
                     transport=_FakeTransport(),

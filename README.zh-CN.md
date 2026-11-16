@@ -102,8 +102,10 @@ cp .env.example .env
 ### 启动守护服务
 
 ```bash
-agy-lark --env-file .env -v
+agylark --env-file .env -v
 ```
+
+- 同时保留兼容命令别名 `agy-lark`（安装后 `agylark` 与 `agy-lark` 均可直接调用）。
 
 - `--env-file`：指定环境变量配置文件路径（默认读取当前工作目录下的 `.env`；传空字符串 `""` 可跳过 `.env` 读取，仅使用进程环境变量）。
 - `--verbose` / `-v`：开启 `DEBUG` 级别详细日志输出（优先级高于 `AGY_LARK_LOG_LEVEL`）。
@@ -137,7 +139,7 @@ python -W error -m unittest discover -s tests -v
 
 `agy-lark` 严格隔离**开源仓库资产**与**本地私人运行数据**：
 
-- **提交到 Git 仓库**：源码（`src/agy_lark/`）、单元测试（`tests/`）、`.env.example`、`pyproject.toml`、`LICENSE`、文档与 Logo 资源。
+- **提交到 Git 仓库**：源码（`src/agylark/`）、单元测试（`tests/`）、`.env.example`、`pyproject.toml`、`LICENSE`、文档与 Logo 资源。
 - **仅保留在本地**（已写入 `.gitignore`）：`.env`、`FEISHU_APP_SECRET`、授权用户的 `open_id` 列表、`.agy-lark/`、`sessions.json`、日志、本地状态／数据库文件以及 `.venv/`。
 
 **严禁将 `.env` 或运行时状态文件提交到公开仓库**。

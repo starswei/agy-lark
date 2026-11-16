@@ -1,4 +1,4 @@
-"""agy_lark.acp_client 离线单元测试（通过模拟 stdio 子进程验证协议与并发控制）。"""
+"""agylark.acp_client 离线单元测试（通过模拟 stdio 子进程验证协议与并发控制）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 
-from agy_lark import (
+from agylark import (
     AcpError,
     AcpSessionUpdate,
     AgyAcpClient,

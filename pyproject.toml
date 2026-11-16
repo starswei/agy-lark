@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agy-lark"
+name = "agylark"
 version = "0.1.0"
 description = "A lightweight, native-ACP bridge between Antigravity (agy) and Feishu / Lark via lark-oapi."
 readme = "README.md"
@@ -34,7 +34,8 @@ dev = [
 ]
 
 [project.scripts]
-agy-lark = "agy_lark.daemon:main"
+agylark = "agylark.daemon:main"
+agy-lark = "agylark.daemon:main"
 
 [project.urls]
 Homepage = "https://github.com/starswei/agy-lark"

@@ -2213,7 +2213,7 @@ def _configure_logging(level_name: str) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     """构建 agy-lark 守护服务 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
-        prog="agy-lark",
+        prog="agylark",
         description="启动飞书 ↔ Antigravity (agy acp --stdio) 单进程桥接守护服务。",
     )
     parser.add_argument(
