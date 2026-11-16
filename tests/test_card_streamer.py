@@ -15,10 +15,14 @@ from agylark import (
     EFFORT_HINT_ELEMENT_ID,
     EFFORT_SELECT_ACTION_NAME,
     EFFORT_STATUS_ELEMENT_ID,
+    HELP_BODY_ELEMENT_ID,
+    HELP_HINT_ELEMENT_ID,
     MODEL_HINT_ELEMENT_ID,
     MODEL_SELECT_ACTION_NAME,
     MODEL_STATUS_ELEMENT_ID,
+    STATUS_BODY_ELEMENT_ID,
     STATUS_ELEMENT_ID,
+    STATUS_HINT_ELEMENT_ID,
     STOP_ACTION_NAME,
     STOP_BUTTON_ELEMENT_ID,
     AcpEffortOption,
@@ -27,6 +31,7 @@ from agylark import (
     AcpSessionUpdate,
     CardRunState,
     CardTransport,
+    ConversationStatusSnapshot,
     EffortSelectCallbackPayload,
     ModelSelectCallbackPayload,
     StopCallbackPayload,
@@ -34,13 +39,17 @@ from agylark import (
     build_create_card_payload,
     build_effort_select_callback_value,
     build_effort_selector_card_json,
+    build_help_card_json,
     build_model_select_callback_value,
     build_model_selector_card_json,
+    build_status_card_json,
     build_stop_callback_value,
     build_stream_content_payload,
     build_streaming_card_json,
     build_update_card_payload,
     build_update_settings_payload,
+    format_help_content,
+    format_status_content,
     has_config_option,
     parse_available_efforts,
     parse_available_models,
@@ -997,6 +1006,83 @@ class TestModelAndEffortSelectorCards(unittest.TestCase):
             ],
             [],
         )
+
+    def test_status_and_help_cards_schema_and_plain_text_formatting(self) -> None:
+        unbound_snap = ConversationStatusSnapshot(
+            conv_key="p2p:oc_dm_1",
+            session_id=None,
+            session_attached=False,
+            workspace_path="D:/Projects/demo",
+            model_id="gemini-3.8-flash",
+            model_source_note="（环境预设，待会话建立应用）",
+            effort_id="high",
+            effort_source_note="（环境预设，待会话建立应用）",
+            acp_running=False,
+        )
+        unbound_card = build_status_card_json(unbound_snap, subtitle="私聊测试")
+        self.assertEqual(unbound_card["schema"], CARD_SCHEMA_VERSION)
+        self.assertTrue(unbound_card["config"]["update_multi"])
+        self.assertEqual(unbound_card["config"]["summary"]["content"], "会话状态：未绑定 · 空闲")
+        self.assertEqual(unbound_card["header"]["subtitle"]["content"], "私聊测试")
+        s_body = _find_element(unbound_card, STATUS_BODY_ELEMENT_ID)
+        s_hint = _find_element(unbound_card, STATUS_HINT_ELEMENT_ID)
+        assert s_body is not None and s_hint is not None
+        self.assertRegex(STATUS_BODY_ELEMENT_ID, _VALID_ELEMENT_ID_RE)
+        self.assertRegex(STATUS_HINT_ELEMENT_ID, _VALID_ELEMENT_ID_RE)
+        self.assertIn("`p2p:oc_dm_1`", s_body["content"])
+        self.assertIn("未绑定", s_body["content"])
+        self.assertIn("D:/Projects/demo", s_body["content"])
+        self.assertIn("`gemini-3.8-flash`（环境预设，待会话建立应用）", s_body["content"])
+        self.assertIn("未启动（按需拉起）", s_body["content"])
+        self.assertIn("/help", s_hint["content"])
+
+        plain_status = format_status_content(unbound_snap, markdown=False)
+        self.assertNotIn("`", plain_status)
+        self.assertNotIn("**", plain_status)
+        self.assertIn("会话标识：p2p:oc_dm_1", plain_status)
+
+        active_snap = ConversationStatusSnapshot(
+            conv_key="group:oc_grp_1:root:om_1",
+            session_id="sess_active_9",
+            session_attached=True,
+            workspace_path="/srv/repo",
+            persisted_cwd="/srv/old",
+            cwd_mismatch=True,
+            model_id="gpt-oss-120b-medium",
+            model_name="GPT-OSS 120B (Medium)",
+            effort_unsupported=True,
+            is_running=True,
+            is_stopping=True,
+            acp_running=True,
+        )
+        active_card = build_status_card_json(active_snap)
+        self.assertEqual(active_card["config"]["summary"]["content"], "会话状态：已附着 · 停止中")
+        a_body = _find_element(active_card, STATUS_BODY_ELEMENT_ID)
+        assert a_body is not None
+        self.assertIn("`sess_active_9`（已附着）", a_body["content"])
+        self.assertIn("/srv/old", a_body["content"])
+        self.assertIn("GPT-OSS 120B (Medium) (`gpt-oss-120b-medium`)", a_body["content"])
+        self.assertIn("当前模型不支持调节", a_body["content"])
+        self.assertIn("正在停止当前任务...", a_body["content"])
+        self.assertIn("运行中", a_body["content"])
+
+        help_card = build_help_card_json(subtitle="指令速查")
+        self.assertEqual(help_card["schema"], CARD_SCHEMA_VERSION)
+        self.assertEqual(help_card["header"]["subtitle"]["content"], "指令速查")
+        h_body = _find_element(help_card, HELP_BODY_ELEMENT_ID)
+        h_hint = _find_element(help_card, HELP_HINT_ELEMENT_ID)
+        assert h_body is not None and h_hint is not None
+        self.assertRegex(HELP_BODY_ELEMENT_ID, _VALID_ELEMENT_ID_RE)
+        self.assertRegex(HELP_HINT_ELEMENT_ID, _VALID_ELEMENT_ID_RE)
+        for cmd in ("/status", "/new", "/stop", "/model", "/effort", "/help"):
+            self.assertIn(cmd, h_body["content"])
+        self.assertIn("实时引导", h_body["content"])
+        self.assertIn("@机器人", h_body["content"])
+        self.assertIn("/status", h_hint["content"])
+
+        plain_help = format_help_content(markdown=False)
+        self.assertNotIn("**", plain_help)
+        self.assertIn("- /status：", plain_help)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,10 @@ MODEL_HINT_ELEMENT_ID = "model_hint"
 EFFORT_SELECT_ACTION_NAME = "select_effort"
 EFFORT_STATUS_ELEMENT_ID = "effort_status"
 EFFORT_HINT_ELEMENT_ID = "effort_hint"
+STATUS_BODY_ELEMENT_ID = "status_body"
+STATUS_HINT_ELEMENT_ID = "status_hint"
+HELP_BODY_ELEMENT_ID = "help_body"
+HELP_HINT_ELEMENT_ID = "help_hint"
 ACP_MODEL_CONFIG_ID = "model"
 ACP_EFFORT_CONFIG_ID = "thought_level"
 DEFAULT_MAX_CONTENT_CHARS = 28_000
@@ -419,6 +423,34 @@ def _build_selector_button(spec: _SelectorButtonSpec) -> dict[str, Any]:
     }
 
 
+def _build_card_shell(
+    *,
+    title: str,
+    summary_text: str,
+    elements: list[dict[str, Any]],
+    subtitle: str | None = None,
+    header_template: str = "blue",
+) -> dict[str, Any]:
+    header: dict[str, Any] = {
+        "title": {"tag": "plain_text", "content": title},
+        "template": header_template,
+    }
+    if isinstance(subtitle, str) and subtitle.strip():
+        header["subtitle"] = {"tag": "plain_text", "content": subtitle.strip()}
+
+    return {
+        "schema": CARD_SCHEMA_VERSION,
+        "config": {
+            "update_multi": True,
+            "summary": {"content": summary_text},
+        },
+        "header": header,
+        "body": {
+            "elements": elements,
+        },
+    }
+
+
 def _build_selector_card_json(
     *,
     title: str,
@@ -459,24 +491,43 @@ def _build_selector_card_json(
             }
         )
 
-    header: dict[str, Any] = {
-        "title": {"tag": "plain_text", "content": title},
-        "template": "blue",
-    }
-    if isinstance(subtitle, str) and subtitle.strip():
-        header["subtitle"] = {"tag": "plain_text", "content": subtitle.strip()}
+    return _build_card_shell(
+        title=title,
+        subtitle=subtitle,
+        summary_text=summary_text,
+        elements=elements,
+    )
 
-    return {
-        "schema": CARD_SCHEMA_VERSION,
-        "config": {
-            "update_multi": True,
-            "summary": {"content": summary_text},
+
+def _build_info_card_json(
+    *,
+    title: str,
+    subtitle: str | None,
+    summary_text: str,
+    body_element_id: str,
+    body_markdown: str,
+    hint_element_id: str,
+    hint_markdown: str,
+) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "element_id": body_element_id,
+            "content": body_markdown,
         },
-        "header": header,
-        "body": {
-            "elements": elements,
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "element_id": hint_element_id,
+            "content": hint_markdown,
         },
-    }
+    ]
+    return _build_card_shell(
+        title=title,
+        subtitle=subtitle,
+        summary_text=summary_text,
+        elements=elements,
+    )
 
 
 def build_model_selector_card_json(
@@ -585,6 +636,203 @@ def build_effort_selector_card_json(
         hint_markdown="💡 点击按钮立即调整当前会话思考强度；配置 `.env` 的 `AGY_EFFORT` 可设默认强度（不同模型支持档位可能不同）。",
         empty_markdown="ℹ️ 当前模型不支持单独调节思考强度；可使用 `/model` 切换到支持思考强度调节的模型后再试。",
         buttons=buttons,
+    )
+
+
+@dataclass(frozen=True)
+class ConversationStatusSnapshot:
+    """单个飞书对话当前绑定的只读状态快照（用于 `/status` 展示）。"""
+
+    conv_key: str
+    session_id: str | None
+    session_attached: bool
+    workspace_path: str
+    persisted_cwd: str | None = None
+    cwd_mismatch: bool = False
+    model_id: str | None = None
+    model_name: str | None = None
+    model_source_note: str | None = None
+    effort_id: str | None = None
+    effort_name: str | None = None
+    effort_source_note: str | None = None
+    effort_unsupported: bool = False
+    is_running: bool = False
+    is_stopping: bool = False
+    acp_running: bool = False
+
+
+_HELP_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/status", "查看当前对话绑定、工作区目录、模型/思考强度与运行状态（只读无副作用）"),
+    ("/new", "重置当前会话并开启新 ACP 上下文（自动重新应用 .env 预设；任务运行中拦截）"),
+    ("/stop", "中止当前正在执行的任务回合（也可点击流式卡片底部的「停止生成」按钮）"),
+    ("/model", "打开交互式模型选择卡片，切换当前会话模型"),
+    ("/effort", "打开交互式思考强度选择卡片（视当前模型是否支持调节而定）"),
+    ("/help", "查看可用斜杠命令与交互说明"),
+)
+
+_HELP_INTERACTION_TIPS: tuple[tuple[str, str], ...] = (
+    ("运行中插话", "任务执行期间直接发送新文本消息，将作为实时引导（steer）注入当前回合，无需等待结束。"),
+    ("群聊唤醒", "群聊中需 @机器人 触发；同一话题及其回复自动隔离绑定独立上下文（未开启群唤醒时仅限私聊）。"),
+    ("透传边界", "仅单独发送上述指令时触发本地控制（不区分大小写）；带参数文本（如 /new 帮我分析 或 /status detail）将作为普通提示词发送给 Antigravity。"),
+)
+
+
+def _format_inline_code(value: str, *, markdown: bool) -> str:
+    return f"`{value}`" if markdown else value
+
+
+def _format_option_display(
+    *,
+    option_id: str | None,
+    option_name: str | None,
+    source_note: str | None,
+    default_label: str,
+    markdown: bool,
+    unsupported_label: str | None = None,
+) -> str:
+    if unsupported_label is not None:
+        return unsupported_label
+    clean_id = option_id.strip() if isinstance(option_id, str) and option_id.strip() else None
+    clean_name = option_name.strip() if isinstance(option_name, str) and option_name.strip() else None
+    if clean_id is None:
+        return default_label
+    formatted_id = _format_inline_code(clean_id, markdown=markdown)
+    base = (
+        f"{clean_name} ({formatted_id})"
+        if clean_name is not None and clean_name != clean_id
+        else formatted_id
+    )
+    return f"{base}{source_note}" if source_note else base
+
+
+def format_status_content(
+    snapshot: ConversationStatusSnapshot,
+    *,
+    markdown: bool = True,
+) -> str:
+    """将对话状态快照渲染为统一的 Markdown 卡片正文或纯文本回退内容。"""
+    if snapshot.session_id and snapshot.session_attached:
+        session_desc = f"{_format_inline_code(snapshot.session_id, markdown=markdown)}（已附着）"
+    elif snapshot.session_id:
+        session_desc = f"{_format_inline_code(snapshot.session_id, markdown=markdown)}（未附着，已持久化待按需恢复）"
+    else:
+        session_desc = "未绑定（将在首条任务消息时自动创建）"
+
+    model_desc = _format_option_display(
+        option_id=snapshot.model_id,
+        option_name=snapshot.model_name,
+        source_note=snapshot.model_source_note,
+        default_label="默认（随 Antigravity 服务端默认）",
+        markdown=markdown,
+    )
+    effort_desc = _format_option_display(
+        option_id=snapshot.effort_id,
+        option_name=snapshot.effort_name,
+        source_note=snapshot.effort_source_note,
+        default_label="默认",
+        markdown=markdown,
+        unsupported_label="当前模型不支持调节" if snapshot.effort_unsupported else None,
+    )
+
+    if snapshot.is_stopping:
+        turn_desc = "正在停止当前任务..."
+    elif snapshot.is_running:
+        turn_desc = "运行中（可直接发消息插话，或发送 /stop 停止）"
+    else:
+        turn_desc = "空闲"
+
+    rows: list[tuple[str, str]] = [
+        ("会话标识", _format_inline_code(snapshot.conv_key, markdown=markdown)),
+        ("ACP 会话", session_desc),
+        ("工作区目录", _format_inline_code(snapshot.workspace_path, markdown=markdown)),
+    ]
+    if snapshot.cwd_mismatch:
+        if snapshot.persisted_cwd:
+            rows.append(
+                (
+                    "历史记录目录",
+                    f"{_format_inline_code(snapshot.persisted_cwd, markdown=markdown)}（与当前工作区不一致，下次任务消息将迁移新建会话）",
+                )
+            )
+        else:
+            rows.append(("目录校验提示", "历史会话工作区记录缺失，下次任务消息将迁移新建会话"))
+
+    rows.extend(
+        [
+            ("当前模型", model_desc),
+            ("思考强度", effort_desc),
+            ("任务状态", turn_desc),
+            ("ACP 进程", "运行中" if snapshot.acp_running else "未启动（按需拉起）"),
+        ]
+    )
+
+    if markdown:
+        return "\n".join(f"- **{label}**：{value}" for label, value in rows)
+    return "\n".join(f"{label}：{value}" for label, value in rows)
+
+
+def build_status_card_json(
+    snapshot: ConversationStatusSnapshot,
+    *,
+    title: str = "Antigravity 会话状态",
+    subtitle: str | None = None,
+) -> dict[str, Any]:
+    """构造 CardKit 2.0 轻量 `/status` 会话状态只读卡片 JSON。"""
+    if snapshot.session_id and snapshot.session_attached:
+        attach_word = "已附着"
+    elif snapshot.session_id:
+        attach_word = "待恢复"
+    else:
+        attach_word = "未绑定"
+
+    if snapshot.is_stopping:
+        run_word = "停止中"
+    elif snapshot.is_running:
+        run_word = "运行中"
+    else:
+        run_word = "空闲"
+
+    return _build_info_card_json(
+        title=title,
+        subtitle=subtitle,
+        summary_text=f"会话状态：{attach_word} · {run_word}",
+        body_element_id=STATUS_BODY_ELEMENT_ID,
+        body_markdown=format_status_content(snapshot, markdown=True),
+        hint_element_id=STATUS_HINT_ELEMENT_ID,
+        hint_markdown="💡 仅做只读查询，不会新建或恢复会话；发送 `/help` 可查看全部可用指令。",
+    )
+
+
+def format_help_content(*, markdown: bool = True) -> str:
+    """将可用指令与交互说明渲染为统一的 Markdown 卡片正文或纯文本回退内容。"""
+    if markdown:
+        cmd_lines = [
+            f"- **`{cmd}`**：{desc}" for cmd, desc in _HELP_COMMANDS
+        ]
+        tip_lines = [
+            f"- **{title}**：{desc}" for title, desc in _HELP_INTERACTION_TIPS
+        ]
+        return "\n".join(["**可用命令**", *cmd_lines, "", "**交互说明**", *tip_lines])
+
+    cmd_lines = [f"- {cmd}：{desc}" for cmd, desc in _HELP_COMMANDS]
+    tip_lines = [f"- {title}：{desc}" for title, desc in _HELP_INTERACTION_TIPS]
+    return "\n".join(["可用命令：", *cmd_lines, "", "交互说明：", *tip_lines])
+
+
+def build_help_card_json(
+    *,
+    title: str = "Antigravity 使用帮助",
+    subtitle: str | None = None,
+) -> dict[str, Any]:
+    """构造 CardKit 2.0 轻量 `/help` 命令清单卡片 JSON。"""
+    return _build_info_card_json(
+        title=title,
+        subtitle=subtitle,
+        summary_text="可用命令与交互说明",
+        body_element_id=HELP_BODY_ELEMENT_ID,
+        body_markdown=format_help_content(markdown=True),
+        hint_element_id=HELP_HINT_ELEMENT_ID,
+        hint_markdown="💡 发送 `/status` 可随时核对当前会话绑定、工作区目录与生效模型配置。",
     )
 
 

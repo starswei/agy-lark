@@ -30,8 +30,10 @@ from agylark import (
     DEFAULT_MAPPING_CAPACITY,
     DEFAULT_SESSIONS_FILENAME,
     EFFORT_STATUS_ELEMENT_ID,
+    HELP_BODY_ELEMENT_ID,
     MODEL_STATUS_ELEMENT_ID,
     SESSION_STORE_SCHEMA_VERSION,
+    STATUS_BODY_ELEMENT_ID,
     STATUS_ELEMENT_ID,
     STOP_BUTTON_ELEMENT_ID,
     AcpError,
@@ -2366,7 +2368,16 @@ class TestModelAndEffortConfigAndCommands(unittest.TestCase):
             message_sender=sender,
         )
         try:
-            for idx, text in enumerate(("/model gemini-3.8-flash", "/effort high", "/new create feature"), start=1):
+            for idx, text in enumerate(
+                (
+                    "/model gemini-3.8-flash",
+                    "/effort high",
+                    "/new create feature",
+                    "/status detail",
+                    "/help me",
+                ),
+                start=1,
+            ):
                 f = daemon.dispatch_message_event(
                     _make_p2_message_event(message_id=f"om_arg_{idx}", text=text)
                 )
@@ -2377,7 +2388,13 @@ class TestModelAndEffortConfigAndCommands(unittest.TestCase):
             self.assertEqual(len(acp.new_session_cwds), 1)
             self.assertEqual(
                 [call["prompt"] for call in acp.prompt_calls],
-                ["/model gemini-3.8-flash", "/effort high", "/new create feature"],
+                [
+                    "/model gemini-3.8-flash",
+                    "/effort high",
+                    "/new create feature",
+                    "/status detail",
+                    "/help me",
+                ],
             )
         finally:
             daemon.close()
@@ -3697,6 +3714,368 @@ class TestNewCommandAndSessionReset(unittest.TestCase):
                 self.assertEqual([c["session_id"] for c in acp_err.prompt_calls], ["sess_fake_11"])
             finally:
                 daemon_err.close()
+
+
+class TestStatusAndHelpCommands(unittest.TestCase):
+    """Issue #11 `/status` 与 `/help` 只读查询、权限与卡片/回退行为测试。"""
+
+    def test_status_and_help_enforce_auth_mention_and_are_read_only_with_zero_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            ws_dir = tmp_path / "ws_main"
+            ws_dir.mkdir()
+            data_dir = tmp_path / "data"
+            config = _make_config(
+                default_workspace=ws_dir,
+                data_dir=data_dir,
+                allowed_open_ids=frozenset({"ou_user_1"}),
+                allow_group_mention=True,
+                agy_model="gemini-3.8-flash",
+                agy_effort="high",
+            )
+            acp = _FakeAcpClient()
+            transport = _FakeTransport()
+            sender = _FakeMessageSender()
+            daemon = AgyLarkDaemon(
+                config,
+                acp_client=acp,
+                transport=transport,
+                message_sender=sender,
+                bot_open_id="ou_bot_1",
+            )
+            try:
+                # 1) 未授权发送者与未 @机器人的群消息均严格拦截
+                for evt in (
+                    _make_p2_message_event(
+                        message_id="om_unauth_status",
+                        text="/status",
+                        sender_open_id="ou_intruder",
+                    ),
+                    _make_p2_message_event(
+                        message_id="om_unauth_help",
+                        text="/help",
+                        sender_open_id="ou_intruder",
+                    ),
+                    _make_p2_message_event(
+                        message_id="om_unmentioned_status",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        text="/status",
+                        sender_open_id="ou_user_1",
+                    ),
+                    _make_p2_message_event(
+                        message_id="om_unmentioned_help",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        text="/help",
+                        sender_open_id="ou_user_1",
+                    ),
+                ):
+                    self.assertIsNone(daemon.dispatch_message_event(evt))
+
+                self.assertEqual(transport.created_cards, [])
+                self.assertEqual(sender.card_messages, [])
+                self.assertEqual(sender.text_messages, [])
+
+                # 2) 已授权私聊（大小写混排 `/STATUS`）与群内 `@机器人 /Help`：纯只读无副作用
+                f_status = daemon.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_dm_status",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="  /STATUS  ",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_status is not None
+                f_status.result(timeout=5.0)
+
+                self.assertFalse(acp.is_running)
+                self.assertEqual(acp.new_session_cwds, [])
+                self.assertEqual(acp.resume_session_calls, [])
+                self.assertEqual(acp.prompt_calls, [])
+                self.assertIsNone(daemon.get_session_id_for_key("p2p:oc_dm_1"))
+
+                status_card = transport.created_cards[-1]["card_json"]
+                self.assertEqual(status_card["header"]["title"]["content"], "Antigravity 会话状态")
+                status_elem = _find_card_element(status_card, STATUS_BODY_ELEMENT_ID)
+                assert status_elem is not None
+                status_md = status_elem["content"]
+                self.assertIn("`p2p:oc_dm_1`", status_md)
+                self.assertIn("未绑定", status_md)
+                self.assertIn(str(ws_dir.resolve()), status_md)
+                self.assertIn("`gemini-3.8-flash`（环境预设，待会话建立应用）", status_md)
+                self.assertIn("`high`（环境预设，待会话建立应用）", status_md)
+                self.assertIn("空闲", status_md)
+                self.assertIn("未启动（按需拉起）", status_md)
+                # 绝不泄露应用密钥或白名单 ID
+                self.assertNotIn("cli_test_app", status_md)
+                self.assertNotIn("sec_test_secret", status_md)
+                self.assertNotIn("ou_user_1", status_md)
+
+                f_help = daemon.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_grp_help",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        text="@_user_1 /Help",
+                        sender_open_id="ou_user_1",
+                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot_1"}}],
+                    )
+                )
+                assert f_help is not None
+                f_help.result(timeout=5.0)
+
+                self.assertFalse(acp.is_running)
+                self.assertEqual(acp.new_session_cwds, [])
+                help_card = transport.created_cards[-1]["card_json"]
+                self.assertEqual(help_card["header"]["title"]["content"], "Antigravity 使用帮助")
+                help_elem = _find_card_element(help_card, HELP_BODY_ELEMENT_ID)
+                assert help_elem is not None
+                help_md = help_elem["content"]
+                for cmd in ("/status", "/new", "/stop", "/model", "/effort", "/help"):
+                    self.assertIn(cmd, help_md)
+                self.assertIn("实时引导", help_md)
+                self.assertIn("@机器人", help_md)
+                self.assertIn("带参数", help_md)
+
+                saved = json.loads((data_dir / DEFAULT_SESSIONS_FILENAME).read_text(encoding="utf-8"))
+                self.assertEqual(saved["conversations"], {})
+            finally:
+                daemon.close()
+
+    def test_status_tracks_running_turn_unsupported_effort_restart_unattached_and_cwd_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            ws_dir_1 = tmp_path / "ws_1"
+            ws_dir_2 = tmp_path / "ws_2"
+            ws_dir_1.mkdir()
+            ws_dir_2.mkdir()
+            data_dir = tmp_path / "data"
+            config1 = _make_config(
+                default_workspace=ws_dir_1,
+                data_dir=data_dir,
+                allowed_open_ids=frozenset({"ou_user_1"}),
+            )
+
+            acp1 = _FakeAcpClient()
+            acp1.use_config_options = True
+            turn_started = threading.Event()
+            release_turn: list[Future[AcpPromptResult]] = []
+
+            def _hold_first_turn(
+                session_id: str,
+                prompt: Any,
+                on_update: Any,
+                message_id: str | None,
+            ) -> Future[AcpPromptResult]:
+                fut: Future[AcpPromptResult] = Future()
+                release_turn.append(fut)
+                turn_started.set()
+                return fut
+
+            acp1.prompt_handler = _hold_first_turn
+            transport1 = _FakeTransport()
+            sender1 = _FakeMessageSender()
+            daemon1 = AgyLarkDaemon(
+                config1,
+                acp_client=acp1,
+                transport=transport1,
+                message_sender=sender1,
+            )
+            try:
+                f_turn = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_run_1",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="working prompt",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_turn is not None
+                self.assertTrue(turn_started.wait(timeout=3.0))
+
+                # 在途回合运行中发 `/status`：非阻塞并显示运行中状态
+                f_status_running = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_status_running",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/status",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_status_running is not None
+                f_status_running.result(timeout=3.0)
+
+                run_elem = _find_card_element(transport1.created_cards[-1]["card_json"], STATUS_BODY_ELEMENT_ID)
+                assert run_elem is not None
+                self.assertIn("`sess_fake_1`（已附着）", run_elem["content"])
+                self.assertIn("运行中", run_elem["content"])
+                self.assertIn("Gemini 4 Argon (`gemini-4-argon`)", run_elem["content"])
+                self.assertIn("Medium (`medium`)", run_elem["content"])
+
+                release_turn[0].set_result(
+                    AcpPromptResult(
+                        session_id="sess_fake_1",
+                        stop_reason="end_turn",
+                        text="done",
+                        thoughts="",
+                        updates=[],
+                    )
+                )
+                f_turn.result(timeout=5.0)
+
+                # 切换到不支持调节思考强度的模型后再查 `/status`
+                f_model = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_model_switch",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/model",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_model is not None
+                f_model.result(timeout=5.0)
+                daemon1.handle_card_action(
+                    _make_p2_card_action_event(
+                        operator_open_id="ou_user_1",
+                        open_chat_id="oc_dm_1",
+                        open_message_id=sender1.card_messages[-1]["message_id"],
+                        action_value=build_model_select_callback_value("gpt-oss-120b-medium"),
+                    )
+                )
+
+                f_status_unsup = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_status_unsup",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/status",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_status_unsup is not None
+                f_status_unsup.result(timeout=5.0)
+                unsup_elem = _find_card_element(transport1.created_cards[-1]["card_json"], STATUS_BODY_ELEMENT_ID)
+                assert unsup_elem is not None
+                self.assertIn("GPT-OSS 120B (Medium) (`gpt-oss-120b-medium`)", unsup_elem["content"])
+                self.assertIn("当前模型不支持调节", unsup_elem["content"])
+                self.assertIn("空闲", unsup_elem["content"])
+            finally:
+                if release_turn and not release_turn[0].done():
+                    release_turn[0].set_result(
+                        AcpPromptResult(
+                            session_id="sess_fake_1",
+                            stop_reason="cancelled",
+                            text="",
+                            thoughts="",
+                            updates=[],
+                        )
+                    )
+                daemon1.close()
+
+            # 2) 重启后同工作区、未发送任务消息前 `/status`：仅展示持久化未附着态，不触发 resume
+            acp2 = _FakeAcpClient(known_sessions={"sess_fake_1"})
+            transport2 = _FakeTransport()
+            daemon2 = AgyLarkDaemon(
+                config1,
+                acp_client=acp2,
+                transport=transport2,
+                message_sender=_FakeMessageSender(),
+            )
+            try:
+                f_status_restored = daemon2.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_status_restored",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/status",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_status_restored is not None
+                f_status_restored.result(timeout=5.0)
+
+                self.assertFalse(acp2.is_running)
+                self.assertEqual(acp2.resume_session_calls, [])
+                restored_elem = _find_card_element(transport2.created_cards[-1]["card_json"], STATUS_BODY_ELEMENT_ID)
+                assert restored_elem is not None
+                self.assertIn("`sess_fake_1`（未附着，已持久化待按需恢复）", restored_elem["content"])
+                self.assertIn("`gpt-oss-120b-medium`（已持久化，待按需恢复应用）", restored_elem["content"])
+            finally:
+                daemon2.close()
+
+            # 3) 重启并更换工作区后 `/status`：提示历史记录目录不一致，仍不改写持久化
+            config3 = _make_config(
+                default_workspace=ws_dir_2,
+                data_dir=data_dir,
+                allowed_open_ids=frozenset({"ou_user_1"}),
+            )
+            acp3 = _FakeAcpClient(known_sessions={"sess_fake_1"})
+            transport3 = _FakeTransport()
+            daemon3 = AgyLarkDaemon(
+                config3,
+                acp_client=acp3,
+                transport=transport3,
+                message_sender=_FakeMessageSender(),
+            )
+            try:
+                f_status_mismatch = daemon3.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_status_mismatch",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/status",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_status_mismatch is not None
+                f_status_mismatch.result(timeout=5.0)
+
+                mismatch_elem = _find_card_element(transport3.created_cards[-1]["card_json"], STATUS_BODY_ELEMENT_ID)
+                assert mismatch_elem is not None
+                self.assertIn(str(ws_dir_2.resolve()), mismatch_elem["content"])
+                self.assertIn(str(ws_dir_1.resolve()), mismatch_elem["content"])
+                self.assertIn("迁移新建会话", mismatch_elem["content"])
+                self.assertEqual(daemon3.get_session_id_for_key("p2p:oc_dm_1"), "sess_fake_1")
+            finally:
+                daemon3.close()
+
+    def test_status_and_help_fallback_to_plain_text_when_cardkit_fails(self) -> None:
+        transport = _FakeTransport()
+
+        def _broken_create_card(_card_json: dict[str, Any]) -> str:
+            raise RuntimeError("cardkit unavailable")
+
+        transport.create_card = _broken_create_card  # type: ignore[method-assign]
+        sender = _FakeMessageSender()
+        acp = _FakeAcpClient()
+        daemon = AgyLarkDaemon(
+            _make_config(agy_model="gemini-3.8-flash"),
+            acp_client=acp,
+            transport=transport,
+            message_sender=sender,
+        )
+        try:
+            with self.assertLogs("agylark.daemon", level="ERROR"):
+                for msg_id, text in (("om_fb_status", "/status"), ("om_fb_help", "/help")):
+                    f = daemon.dispatch_message_event(
+                        _make_p2_message_event(message_id=msg_id, text=text)
+                    )
+                    assert f is not None
+                    f.result(timeout=5.0)
+
+            self.assertEqual(sender.card_messages, [])
+            self.assertEqual(len(sender.text_messages), 2)
+            self.assertIn("会话标识：p2p:oc_chat_1", sender.text_messages[0]["text"])
+            self.assertIn("当前模型：gemini-3.8-flash（环境预设，待会话建立应用）", sender.text_messages[0]["text"])
+            self.assertIn("- /status：", sender.text_messages[1]["text"])
+            self.assertIn("- /help：", sender.text_messages[1]["text"])
+        finally:
+            daemon.close()
 
 
 def tearDownModule() -> None:

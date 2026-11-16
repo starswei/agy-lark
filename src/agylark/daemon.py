@@ -28,13 +28,18 @@ from .card_streamer import (
     AcpEffortOption,
     AcpModelOption,
     CardTransport,
+    ConversationStatusSnapshot,
     StreamingCardUpdater,
     build_create_card_payload,
     build_effort_selector_card_json,
+    build_help_card_json,
     build_model_selector_card_json,
+    build_status_card_json,
     build_stream_content_payload,
     build_update_card_payload,
     build_update_settings_payload,
+    format_help_content,
+    format_status_content,
     has_config_option,
     parse_available_efforts,
     parse_available_models,
@@ -1242,18 +1247,17 @@ class AgyLarkDaemon:
 
     def _process_incoming_message(self, msg: IncomingMessage) -> None:
         conv_key = self.resolve_conversation_key(msg)
-        normalized_cmd = msg.text.strip().lower()
-        if normalized_cmd == "/stop":
-            self._handle_stop_command(msg, conv_key)
-            return
-        if normalized_cmd == "/new":
-            self._handle_new_command(msg, conv_key)
-            return
-        if normalized_cmd == "/model":
-            self._handle_selector_command(msg, conv_key, kind="model")
-            return
-        if normalized_cmd == "/effort":
-            self._handle_selector_command(msg, conv_key, kind="effort")
+        command_handlers: dict[str, Callable[[], None]] = {
+            "/stop": lambda: self._handle_stop_command(msg, conv_key),
+            "/new": lambda: self._handle_new_command(msg, conv_key),
+            "/model": lambda: self._handle_selector_command(msg, conv_key, kind="model"),
+            "/effort": lambda: self._handle_selector_command(msg, conv_key, kind="effort"),
+            "/status": lambda: self._handle_status_command(msg, conv_key),
+            "/help": lambda: self._handle_help_command(msg, conv_key),
+        }
+        handler = command_handlers.get(msg.text.strip().lower())
+        if handler is not None:
+            handler()
             return
 
         self._handle_prompt_or_steer(msg, conv_key)
@@ -1911,6 +1915,173 @@ class AgyLarkDaemon:
                 }
             }
         return {"toast": {"type": "success", "content": f"已切换{action_noun}为 {display_name}"}}
+
+    @staticmethod
+    def _resolve_snapshot_option(
+        *,
+        entry_value: str | None,
+        config_value: str,
+        effective_attached: bool,
+        options: Sequence[Any],
+        id_attr: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        """按优先级（会话记录 > 环境预设 > 默认）解析快照选项 ID、名称与来源说明。"""
+        if entry_value:
+            option_id = entry_value
+            source_note = None if effective_attached else "（已持久化，待按需恢复应用）"
+        elif config_value:
+            option_id = config_value
+            source_note = "（环境预设，待会话建立应用）"
+        else:
+            return None, None, None
+
+        matched = next((opt for opt in options if getattr(opt, id_attr, None) == option_id), None)
+        option_name = matched.name if matched is not None else None
+        return option_id, option_name, source_note
+
+    def _collect_conversation_status_snapshot(
+        self,
+        conv_key: str,
+    ) -> ConversationStatusSnapshot:
+        """只读采集当前会话绑定、工作区、模型/思考强度与运行状态快照，不触发任何副作用。"""
+        with self._lock:
+            entry = self._conversations.get(conv_key)
+            default_models = self._default_available_models
+
+        workspace_path = _format_workspace_path(self.config.default_workspace)
+        acp_running = bool(self.acp_client.is_running)
+
+        if entry is None:
+            session_id = None
+            persisted_cwd = None
+            session_attached = False
+            uses_config_options = False
+            entry_model_id = None
+            entry_effort_id = None
+            available_models = default_models
+            available_efforts: tuple[AcpEffortOption, ...] = ()
+            active_turn: _ActiveTurn | None = None
+        else:
+            acquired = entry.dispatch_lock.acquire(blocking=False)
+            try:
+                session_id = entry.session_id
+                persisted_cwd = entry.persisted_cwd
+                session_attached = entry.session_attached
+                uses_config_options = entry.uses_config_options
+                entry_model_id = entry.model_id
+                entry_effort_id = entry.effort_id
+                available_models = entry.available_models or default_models
+                available_efforts = entry.available_efforts
+                active_turn = entry.active_turn
+            finally:
+                if acquired:
+                    entry.dispatch_lock.release()
+
+        effective_attached = bool(session_id and session_attached and acp_running)
+        if active_turn is None and session_id is not None:
+            with self._lock:
+                active_turn = self._active_turns.get(session_id)
+
+        is_running = active_turn is not None and not active_turn.done_event.is_set()
+        is_stopping = bool(is_running and active_turn is not None and active_turn.cancelled_requested)
+        cwd_mismatch = session_id is not None and not _workspaces_match(
+            persisted_cwd,
+            self.config.default_workspace,
+        )
+
+        model_id, model_name, model_source_note = self._resolve_snapshot_option(
+            entry_value=entry_model_id,
+            config_value=self.config.agy_model,
+            effective_attached=effective_attached,
+            options=available_models,
+            id_attr="model_id",
+        )
+
+        effort_unsupported = bool(
+            effective_attached and uses_config_options and not available_efforts
+        )
+        if effort_unsupported:
+            effort_id, effort_name, effort_source_note = None, None, None
+        else:
+            effort_id, effort_name, effort_source_note = self._resolve_snapshot_option(
+                entry_value=entry_effort_id,
+                config_value=self.config.agy_effort,
+                effective_attached=effective_attached,
+                options=available_efforts,
+                id_attr="effort_id",
+            )
+
+        return ConversationStatusSnapshot(
+            conv_key=conv_key,
+            session_id=session_id,
+            session_attached=effective_attached,
+            workspace_path=workspace_path,
+            persisted_cwd=persisted_cwd,
+            cwd_mismatch=cwd_mismatch,
+            model_id=model_id,
+            model_name=model_name,
+            model_source_note=model_source_note,
+            effort_id=effort_id,
+            effort_name=effort_name,
+            effort_source_note=effort_source_note,
+            effort_unsupported=effort_unsupported,
+            is_running=is_running,
+            is_stopping=is_stopping,
+            acp_running=acp_running,
+        )
+
+    def _send_card_or_fallback_text(
+        self,
+        *,
+        msg: IncomingMessage,
+        conv_key: str,
+        card_json: dict[str, Any],
+        fallback_text: str,
+        action_label: str,
+    ) -> None:
+        """优先发送轻量 CardKit 2.0 信息卡片；创建或发送异常时优雅回退为纯文本回复。"""
+        try:
+            card_id = self.transport.create_card(card_json)
+            sent_msg_id = self.message_sender.send_card_message(
+                chat_id=msg.chat_id,
+                card_id=card_id,
+                reply_to_message_id=msg.message_id,
+                reply_in_thread=bool(msg.thread_id),
+            )
+            if sent_msg_id:
+                self._record_reply_message_key(sent_msg_id, conv_key)
+            return
+        except Exception:
+            logger.exception("发送%s卡片失败，降级为纯文本回复 (conv_key=%s)", action_label, conv_key)
+
+        self._safe_send_text(
+            chat_id=msg.chat_id,
+            text=fallback_text,
+            reply_to_message_id=msg.message_id,
+            reply_in_thread=bool(msg.thread_id),
+            conv_key=conv_key,
+        )
+
+    def _handle_status_command(self, msg: IncomingMessage, conv_key: str) -> None:
+        """处理独立 `/status` 指令：只读返回当前会话绑定、工作区、模型与任务状态。"""
+        snapshot = self._collect_conversation_status_snapshot(conv_key)
+        self._send_card_or_fallback_text(
+            msg=msg,
+            conv_key=conv_key,
+            card_json=build_status_card_json(snapshot),
+            fallback_text=format_status_content(snapshot, markdown=False),
+            action_label="会话状态",
+        )
+
+    def _handle_help_command(self, msg: IncomingMessage, conv_key: str) -> None:
+        """处理独立 `/help` 指令：展示完整可用斜杠命令与交互说明。"""
+        self._send_card_or_fallback_text(
+            msg=msg,
+            conv_key=conv_key,
+            card_json=build_help_card_json(),
+            fallback_text=format_help_content(markdown=False),
+            action_label="使用帮助",
+        )
 
     def _handle_new_command(self, msg: IncomingMessage, conv_key: str) -> None:
         """处理独立 /new 指令：检查并发回合后清理旧绑定、开启新会话并更新持久化。"""
