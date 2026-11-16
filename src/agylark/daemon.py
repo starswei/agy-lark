@@ -1246,6 +1246,9 @@ class AgyLarkDaemon:
         if normalized_cmd == "/stop":
             self._handle_stop_command(msg, conv_key)
             return
+        if normalized_cmd == "/new":
+            self._handle_new_command(msg, conv_key)
+            return
         if normalized_cmd == "/model":
             self._handle_selector_command(msg, conv_key, kind="model")
             return
@@ -1600,11 +1603,15 @@ class AgyLarkDaemon:
             notice="\n".join(notices) if notices else None,
         )
 
-    def _cleanup_failed_session(self, session_id: str) -> None:
+    def _close_session_quietly(self, session_id: str, *, context: str = "旧会话") -> None:
+        """尽最大努力关闭指定 ACP 会话，忽略底层连接或不支持异常。"""
         try:
             self.acp_client.close_session(session_id)
         except Exception:
-            logger.debug("清理失败会话时忽略异常 (session_id=%s)", session_id)
+            logger.debug("关闭%s时忽略异常 (session_id=%s)", context, session_id)
+
+    def _cleanup_failed_session(self, session_id: str) -> None:
+        self._close_session_quietly(session_id, context="失败会话")
 
     def _format_current_model_name_locked(self, entry: _ConversationEntry) -> str | None:
         with self._lock:
@@ -1904,6 +1911,69 @@ class AgyLarkDaemon:
                 }
             }
         return {"toast": {"type": "success", "content": f"已切换{action_noun}为 {display_name}"}}
+
+    def _handle_new_command(self, msg: IncomingMessage, conv_key: str) -> None:
+        """处理独立 /new 指令：检查并发回合后清理旧绑定、开启新会话并更新持久化。"""
+        entry = self._get_or_create_entry(conv_key)
+        reply_text: str
+        with entry.dispatch_lock:
+            active_turn = entry.active_turn
+            if active_turn is not None and not active_turn.done_event.is_set():
+                reply_text = "当前有任务正在执行，请等待完成或先发送 /stop 停止后再开启新会话。"
+            else:
+                old_sid = entry.session_id
+                was_attached = entry.session_attached
+                self._clear_entry_session_binding_locked(entry)
+                entry.model_id = None
+                entry.effort_id = None
+                entry.available_efforts = ()
+                self._commit_entry_persistence_locked(entry)
+
+                if was_attached and old_sid is not None and self.acp_client.is_running:
+                    self._close_session_quietly(old_sid, context="已重置的旧会话")
+
+                acp_ready = True
+                try:
+                    self._ensure_acp_started()
+                except Exception as exc:
+                    acp_ready = False
+                    logger.exception("处理 /new 时启动 ACP 失败 (conv_key=%s)", conv_key)
+                    if old_sid:
+                        reply_text = f"已清理旧会话绑定，但启动 Antigravity 新会话失败：{exc}"
+                    else:
+                        reply_text = f"启动 Antigravity 新会话失败：{exc}"
+
+                if acp_ready:
+                    session_res = self._ensure_entry_session_locked(entry)
+                    if session_res.session_id is None:
+                        err = session_res.error or "开启新会话失败。"
+                        reply_text = (
+                            f"已清理旧会话绑定，但{err}"
+                            if old_sid and not err.startswith("已清理")
+                            else err
+                        )
+                    else:
+                        new_sid = session_res.session_id
+                        lead = (
+                            f"已重置旧会话上下文并为您开启新会话（`{new_sid}`）。"
+                            if old_sid
+                            else f"已为您开启新会话（`{new_sid}`）。"
+                        )
+                        parts = [lead]
+                        model_display = self._format_current_model_name_locked(entry)
+                        if model_display:
+                            parts.append(f"当前模型：{model_display}")
+                        if entry.effort_id:
+                            parts.append(f"思考强度：`{entry.effort_id}`")
+                        reply_text = " ".join(parts)
+
+        self._safe_send_text(
+            chat_id=msg.chat_id,
+            text=reply_text,
+            reply_to_message_id=msg.message_id,
+            reply_in_thread=bool(msg.thread_id),
+            conv_key=conv_key,
+        )
 
     def _handle_stop_command(self, msg: IncomingMessage, conv_key: str) -> None:
         with self._lock:

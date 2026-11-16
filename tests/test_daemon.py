@@ -2366,7 +2366,7 @@ class TestModelAndEffortConfigAndCommands(unittest.TestCase):
             message_sender=sender,
         )
         try:
-            for idx, text in enumerate(("/model gemini-3.8-flash", "/effort high"), start=1):
+            for idx, text in enumerate(("/model gemini-3.8-flash", "/effort high", "/new create feature"), start=1):
                 f = daemon.dispatch_message_event(
                     _make_p2_message_event(message_id=f"om_arg_{idx}", text=text)
                 )
@@ -2374,9 +2374,10 @@ class TestModelAndEffortConfigAndCommands(unittest.TestCase):
                 f.result(timeout=5.0)
 
             self.assertEqual(acp.set_config_option_calls, [])
+            self.assertEqual(len(acp.new_session_cwds), 1)
             self.assertEqual(
                 [call["prompt"] for call in acp.prompt_calls],
-                ["/model gemini-3.8-flash", "/effort high"],
+                ["/model gemini-3.8-flash", "/effort high", "/new create feature"],
             )
         finally:
             daemon.close()
@@ -3339,6 +3340,363 @@ class TestSessionPersistenceAndResume(unittest.TestCase):
             saved2 = json.loads((data_dir / DEFAULT_SESSIONS_FILENAME).read_text(encoding="utf-8"))
             self.assertEqual(saved2["conversations"]["p2p:oc_real_dm"]["session_id"], sid1)
             self.assertEqual([m for m in sender2.text_messages if "⚠️" in m["text"]], [])
+
+
+class TestNewCommandAndSessionReset(unittest.TestCase):
+    """Issue #10 `/new` 主动重置并开启新 ACP 会话与持久化测试。"""
+
+    def test_slash_new_resets_dm_and_group_sessions_with_presets_and_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            ws_dir = tmp_path / "workspace"
+            ws_dir.mkdir()
+            data_dir = tmp_path / "data"
+            config = _make_config(
+                default_workspace=ws_dir,
+                data_dir=data_dir,
+                allowed_open_ids=("ou_user_1",),
+                allow_group_mention=True,
+                agy_model="gemini-3.8-flash",
+                agy_effort="high",
+            )
+
+            sender1 = _FakeMessageSender()
+            client1 = _FakeAcpClient()
+            client1.use_config_options = True
+            daemon1 = AgyLarkDaemon(
+                config,
+                transport=_FakeTransport(),
+                message_sender=sender1,
+                acp_client=client1,
+                bot_open_id="ou_bot_1",
+            )
+            try:
+                # 1) 建立私聊 sess_fake_1 与群话题 sess_fake_2
+                for evt in (
+                    _make_p2_message_event(
+                        message_id="om_dm_init",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="dm round 1",
+                        sender_open_id="ou_user_1",
+                    ),
+                    _make_p2_message_event(
+                        message_id="om_grp_init",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        text="@_user_1 grp round 1",
+                        sender_open_id="ou_user_1",
+                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot_1"}}],
+                    ),
+                ):
+                    f = daemon1.dispatch_message_event(evt)
+                    assert f is not None
+                    f.result(timeout=5.0)
+
+                # 私聊切换自定义模型与思考强度（后续 /new 应重置回环境变量预设）
+                f_m = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_dm_model",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/model",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_m is not None
+                f_m.result(timeout=5.0)
+                daemon1.handle_card_action(
+                    _make_p2_card_action_event(
+                        operator_open_id="ou_user_1",
+                        open_chat_id="oc_dm_1",
+                        open_message_id=sender1.card_messages[-1]["message_id"],
+                        action_value=build_model_select_callback_value("gemini-4-hydrogen"),
+                    )
+                )
+                f_e = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_dm_effort",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/effort",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_e is not None
+                f_e.result(timeout=5.0)
+                daemon1.handle_card_action(
+                    _make_p2_card_action_event(
+                        operator_open_id="ou_user_1",
+                        open_chat_id="oc_dm_1",
+                        open_message_id=sender1.card_messages[-1]["message_id"],
+                        action_value=build_effort_select_callback_value("xhigh"),
+                    )
+                )
+
+                # 2) 私聊发送大小写混排 `/NEW` -> 关闭 sess_fake_1、新建 sess_fake_3 并恢复预设
+                f_new_dm = daemon1.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_dm_new",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="  /NEW ",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_new_dm is not None
+                f_new_dm.result(timeout=5.0)
+
+                self.assertIn("sess_fake_1", client1.closed_sessions)
+                self.assertIn("已重置旧会话上下文并为您开启新会话（`sess_fake_3`）", sender1.text_messages[-1]["text"])
+
+                # 私聊追问落在 sess_fake_3；群话题未受影响仍留在 sess_fake_2
+                for evt in (
+                    _make_p2_message_event(
+                        message_id="om_dm_after",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="dm round 2",
+                        sender_open_id="ou_user_1",
+                    ),
+                    _make_p2_message_event(
+                        message_id="om_grp_after",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        root_id="om_grp_init",
+                        thread_id="omt_grp_1",
+                        text="@_user_1 grp round 2",
+                        sender_open_id="ou_user_1",
+                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot_1"}}],
+                    ),
+                ):
+                    f = daemon1.dispatch_message_event(evt)
+                    assert f is not None
+                    f.result(timeout=5.0)
+
+                self.assertEqual(
+                    [(c["session_id"], c["prompt"]) for c in client1.prompt_calls],
+                    [
+                        ("sess_fake_1", "dm round 1"),
+                        ("sess_fake_2", "grp round 1"),
+                        ("sess_fake_3", "dm round 2"),
+                        ("sess_fake_2", "grp round 2"),
+                    ],
+                )
+            finally:
+                daemon1.close()
+
+            saved1 = json.loads((data_dir / DEFAULT_SESSIONS_FILENAME).read_text(encoding="utf-8"))
+            self.assertEqual(saved1["conversations"]["p2p:oc_dm_1"]["session_id"], "sess_fake_3")
+            self.assertEqual(saved1["conversations"]["p2p:oc_dm_1"]["model_id"], "gemini-3.8-flash")
+            self.assertEqual(saved1["conversations"]["p2p:oc_dm_1"]["effort_id"], "high")
+            self.assertEqual(
+                saved1["conversations"]["group:oc_grp_1:root:om_grp_init"]["session_id"],
+                "sess_fake_2",
+            )
+
+            # 3) 重启后验证：私聊恢复 sess_fake_3；群话题在未附着态直接发 /new（引用旧 thread_id）不调用 resume_session
+            sender2 = _FakeMessageSender()
+            client2 = _FakeAcpClient(known_sessions={"sess_fake_2", "sess_fake_3"})
+            client2._session_seq = 20
+            client2.use_config_options = True
+            daemon2 = AgyLarkDaemon(
+                config,
+                transport=_FakeTransport(),
+                message_sender=sender2,
+                acp_client=client2,
+                bot_open_id="ou_bot_1",
+            )
+            try:
+                f_dm_cont = daemon2.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_dm_cont",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="dm after restart",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_dm_cont is not None
+                f_dm_cont.result(timeout=5.0)
+
+                f_grp_new = daemon2.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_grp_new",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        thread_id="omt_grp_1",
+                        text="@_user_1 /new",
+                        sender_open_id="ou_user_1",
+                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot_1"}}],
+                    )
+                )
+                assert f_grp_new is not None
+                f_grp_new.result(timeout=5.0)
+
+                grp_new_reply_id = sender2.text_messages[-1]["message_id"]
+                f_grp_cont = daemon2.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_grp_cont_new",
+                        chat_id="oc_grp_1",
+                        chat_type="group",
+                        parent_id=grp_new_reply_id,
+                        text="@_user_1 grp round 3",
+                        sender_open_id="ou_user_1",
+                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot_1"}}],
+                    )
+                )
+                assert f_grp_cont is not None
+                f_grp_cont.result(timeout=5.0)
+            finally:
+                daemon2.close()
+
+            self.assertEqual([sid for sid, _ in client2.resume_session_calls], ["sess_fake_3"])
+            self.assertNotIn("sess_fake_2", client2.closed_sessions)
+            self.assertEqual(
+                [(c["session_id"], c["prompt"]) for c in client2.prompt_calls],
+                [
+                    ("sess_fake_3", "dm after restart"),
+                    ("sess_fake_21", "grp round 3"),
+                ],
+            )
+            saved2 = json.loads((data_dir / DEFAULT_SESSIONS_FILENAME).read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved2["conversations"]["group:oc_grp_1:root:om_grp_init"]["session_id"],
+                "sess_fake_21",
+            )
+
+    def test_slash_new_blocks_during_active_turn_and_clears_old_binding_on_spawn_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            ws_dir = tmp_path / "workspace"
+            ws_dir.mkdir()
+            data_dir = tmp_path / "data"
+            config = _make_config(
+                default_workspace=ws_dir,
+                data_dir=data_dir,
+                allowed_open_ids=("ou_user_1",),
+            )
+
+            sender = _FakeMessageSender()
+            acp = _FakeAcpClient()
+            acp.use_config_options = True
+            turn_started = threading.Event()
+            held_futures: list[Future[AcpPromptResult]] = []
+
+            def hold_prompt(
+                session_id: str,
+                prompt: Any,
+                on_update: Any,
+                message_id: str | None,
+            ) -> Future[AcpPromptResult]:
+                fut: Future[AcpPromptResult] = Future()
+                held_futures.append(fut)
+                turn_started.set()
+                return fut
+
+            acp.prompt_handler = hold_prompt
+            daemon = AgyLarkDaemon(
+                config,
+                transport=_FakeTransport(),
+                message_sender=sender,
+                acp_client=acp,
+            )
+            try:
+                f_turn = daemon.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_busy_1",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="long task",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_turn is not None
+                self.assertTrue(turn_started.wait(timeout=2.0))
+
+                # 1) 在途任务执行期间 /new 被拦截且不取消任务、不创建新会话
+                f_new_busy = daemon.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_new_busy",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="/new",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_new_busy is not None
+                f_new_busy.result(timeout=5.0)
+                self.assertIn("当前有任务正在执行", sender.text_messages[-1]["text"])
+                self.assertEqual(acp.cancel_calls, [])
+                self.assertEqual(len(acp.new_session_cwds), 1)
+
+                held_futures[0].set_result(
+                    AcpPromptResult(
+                        session_id="sess_fake_1",
+                        stop_reason="end_turn",
+                        text="done",
+                        thoughts="",
+                        updates=[],
+                    )
+                )
+                f_turn.result(timeout=5.0)
+            finally:
+                daemon.close()
+
+            # 2) 新建会话失败时，仍确保旧绑定已从内存与 sessions.json 清除，后续恢复时不误用旧会话
+            sender_err = _FakeMessageSender()
+            acp_err = _FakeAcpClient(known_sessions={"sess_fake_1"})
+            acp_err._session_seq = 10
+            acp_err.use_config_options = True
+            fail_new = True
+            orig_new_session = acp_err.new_session
+
+            def flaky_new_session(*args, **kwargs):
+                if fail_new:
+                    raise RuntimeError("spawn failed")
+                return orig_new_session(*args, **kwargs)
+
+            acp_err.new_session = flaky_new_session  # type: ignore[method-assign]
+            daemon_err = AgyLarkDaemon(
+                config,
+                transport=_FakeTransport(),
+                message_sender=sender_err,
+                acp_client=acp_err,
+            )
+            try:
+                with self.assertLogs("agylark.daemon", level="ERROR"):
+                    f_new_fail = daemon_err.dispatch_message_event(
+                        _make_p2_message_event(
+                            message_id="om_new_fail",
+                            chat_id="oc_dm_1",
+                            chat_type="p2p",
+                            text="/new",
+                            sender_open_id="ou_user_1",
+                        )
+                    )
+                    assert f_new_fail is not None
+                    f_new_fail.result(timeout=5.0)
+
+                self.assertIn("已清理旧会话绑定", sender_err.text_messages[-1]["text"])
+                saved_cleared = json.loads((data_dir / DEFAULT_SESSIONS_FILENAME).read_text(encoding="utf-8"))
+                self.assertNotIn("p2p:oc_dm_1", saved_cleared["conversations"])
+
+                fail_new = False
+                f_after_err = daemon_err.dispatch_message_event(
+                    _make_p2_message_event(
+                        message_id="om_after_fail",
+                        chat_id="oc_dm_1",
+                        chat_type="p2p",
+                        text="after fail",
+                        sender_open_id="ou_user_1",
+                    )
+                )
+                assert f_after_err is not None
+                f_after_err.result(timeout=5.0)
+                self.assertEqual(acp_err.resume_session_calls, [])
+                self.assertEqual([c["session_id"] for c in acp_err.prompt_calls], ["sess_fake_11"])
+            finally:
+                daemon_err.close()
 
 
 def tearDownModule() -> None:
